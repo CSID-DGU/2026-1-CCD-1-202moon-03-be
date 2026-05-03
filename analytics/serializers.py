@@ -1,0 +1,1 @@
+# analytics는 views.py에서 직접 처리
