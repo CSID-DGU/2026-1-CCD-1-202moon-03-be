@@ -45,13 +45,13 @@ AI는 콘텐츠를 **한 번만 처리**해서 DB에 저장한다.
 
 ```
 AI 생성 (한 번, DB 저장)
-  blanks: ["도파민", "전두엽", "세로토닌", "작동합니다"]  ← 최대 4개 모두 생성
+  blanks: ["도파민", "전두엽"]  ← 세그먼트당 최대 2개 생성
   target_time: 각 키워드의 발화 시점
 
 프론트엔드 (실시간, DB 재호출 없음)
   초급: blanks 중 1개만 활성화, fall_speed=0.7
   중급: 2개 활성화,              fall_speed=1.0
-  고급: 4개 전부 활성화,         fall_speed=2.0
+  고급: 2개 전부 활성화,         fall_speed=2.0
 
   fall_start_time = target_time - (lead_time / fall_speed)  ← 프론트가 직접 계산
 ```
@@ -59,18 +59,20 @@ AI 생성 (한 번, DB 저장)
 ---
 ---
 
-# 1. 파일 업로드 처리
+# 1. 영상 파일 업로드 처리
 
 ## 기능 설명
 
-백엔드가 오디오/비디오 파일을 전달하면, AI가 음성 인식 → 키워드 추출 → 빈칸 자막 게임 데이터를 생성해서 반환한다.
+백엔드가 영상 파일을 전달하면, AI가 오디오를 추출한 뒤 음성 인식 → 키워드 추출 → 빈칸 자막 게임 데이터를 생성해서 반환한다.
 
 ## AI 구현 주의사항
 
 - 파일 크기 **25MB 초과** 시 자동으로 10분 단위 분할 처리 후 병합 (백엔드 별도 처리 불필요)
 - 처리 시간이 길 수 있으므로 백엔드에서 **비동기 또는 타임아웃 설정** 권장 (영상 길이에 따라 1~5분 소요)
 - `refine=false` 옵션으로 GPT 교정 단계를 스킵하면 처리 속도 단축 가능
-- 난이도 파라미터(`blanks_per_sentence`, `fall_speed`, `lead_time`)는 **AI 내부 고정값**으로 처리하므로 요청 시 전달 불필요
+- 난이도 파라미터(`blanks_per_sentence`, `fall_speed`, `lead_time`)는 요청 시 전달 불필요
+  - AI는 세그먼트당 최대 빈칸 2개를 생성
+  - `fall_speed`, `lead_time`은 프론트엔드가 자체 난이도 계산에 사용
 
 ---
 
@@ -88,18 +90,18 @@ AI 생성 (한 번, DB 저장)
 
 | 필드 | 타입 | 필수 | 기본값 | 설명 |
 |---|---|---|---|---|
-| `file` | File | ✅ | — | 오디오/비디오 파일 |
+| `file` | File | ✅ | — | 영상 파일 |
 | `language` | string | ❌ | `"ko"` | STT 언어 코드 |
 | `stt_prompt` | string | ❌ | `null` | Whisper 전문 용어 힌트 |
 | `refine` | boolean | ❌ | `true` | Whisper 결과 GPT 교정 여부 |
 
-**지원 파일 형식**: `.mp3` `.wav` `.m4a` `.mp4` `.webm`
+**지원 파일 형식**: `.mp4` `.webm`
 
 ### Request Body 예시
 
 ```bash
 curl -X POST http://localhost:8000/api/process \
-  -F "file=@lecture.mp3" \
+  -F "file=@lecture.mp4" \
   -F "language=ko" \
   -F "refine=true"
 ```
@@ -125,9 +127,7 @@ curl -X POST http://localhost:8000/api/process \
       "blank_text": "______ 시스템이 일반인과 다르게 ______",
       "blanks": [
         { "keyword": "도파민",    "position": 0, "answer_length": 3 },
-        { "keyword": "전두엽",    "position": 1, "answer_length": 3 },
-        { "keyword": "세로토닌",  "position": 2, "answer_length": 4 },
-        { "keyword": "작동합니다","position": 3, "answer_length": 5 }
+        { "keyword": "작동합니다","position": 1, "answer_length": 5 }
       ]
     }
   ],
@@ -152,11 +152,12 @@ curl -X POST http://localhost:8000/api/process \
         "철제 도구를 사용하여 농사를 지었다"
       ],
       "answer_index": 1,
-      "explanation":  "구석기 시대는 이동 생활을 하며 사냥과 채집으로 식량을 구했습니다."
+      "correct_feedback": "정답입니다! 구석기 시대는 이동 생활을 하며 사냥과 채집으로 식량을 구했습니다.",
+      "incorrect_feedback": "아쉽지만 틀렸습니다. 구석기 시대는 이동 생활을 하며 사냥과 채집으로 식량을 구했습니다."
     }
   ],
   "config": {
-    "max_blanks_per_sentence": 4,
+    "max_blanks_per_sentence": 2,
     "total_blanks":            42,
     "total_segments":          15
   },
@@ -181,7 +182,7 @@ curl -X POST http://localhost:8000/api/process \
 | `end` | float | 종료 시간(초) |
 | `original_text` | string | 정답이 보이는 원본 자막 |
 | `blank_text` | string | `______` 처리된 빈칸 자막 |
-| `blanks[]` | array | 빈칸 목록 **(최대 4개)** |
+| `blanks[]` | array | 빈칸 목록 **(최대 2개)** |
 | `blanks[].keyword` | string | 정답 단어 |
 | `blanks[].position` | int | 왼쪽부터 몇 번째 빈칸인지 (0-indexed) |
 | `blanks[].answer_length` | int | 정답 글자 수 (힌트 표시용) |
@@ -216,7 +217,8 @@ curl -X POST http://localhost:8000/api/process \
 | `question` | string | 질문 내용 |
 | `options` | string[] | 선택지 4개 (0~3번 인덱스) |
 | `answer_index` | int | 정답 선택지 인덱스 (0~3) |
-| `explanation` | string | 정답 해설 |
+| `correct_feedback` | string | 정답 선택 시 피드백/해설 |
+| `incorrect_feedback` | string | 오답 선택 시 피드백/해설 |
 
 > 프론트엔드는 영상 재생 중 `trigger_time`이 되면 퀴즈 팝업을 띄우고,
 > 학습자가 답을 선택하면 `answer_index`와 비교해서 정오 판정.
@@ -226,7 +228,7 @@ curl -X POST http://localhost:8000/api/process \
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `max_blanks_per_sentence` | int | AI가 생성한 최대 빈칸 수 (항상 `4`) |
+| `max_blanks_per_sentence` | int | AI가 생성한 최대 빈칸 수 (항상 `2`) |
 | `total_blanks` | int | 전체 빈칸 개수 (max 기준) |
 | `total_segments` | int | 전체 자막 세그먼트 수 |
 
@@ -234,7 +236,7 @@ curl -X POST http://localhost:8000/api/process \
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `transcript_source` | string | `"whisper"` / `"youtube_manual"` / `"youtube_auto"` |
+| `transcript_source` | string | `"whisper"` / `"youtube_manual"` |
 | `total_words` | int | 인식된 전체 단어 수 |
 | `language` | string | 처리 언어 |
 | `gpt_refined` | boolean | GPT 교정 실행 여부 |
@@ -265,12 +267,14 @@ curl -X POST http://localhost:8000/api/process \
 
 ## 기능 설명
 
-백엔드가 YouTube URL을 전달하면, AI가 자막 유무를 확인해 자막이 있으면 자막을, 없으면 Whisper STT를 사용해 game_data를 생성해 반환한다.
+백엔드가 YouTube URL을 전달하면, AI가 자막 유무를 확인한다.
+수동 자막이 있으면 해당 자막을 사용하고, 자동 자막만 있거나 자막이 없으면 Whisper STT를 사용해 game_data를 생성해 반환한다.
 
 ## AI 구현 주의사항
 
 - 자막 존재 여부는 AI가 내부적으로 판단하므로 백엔드 별도 확인 불필요
-- 자막 있으면 Whisper 미사용 → 처리 속도 빠름 (10~30초)
+- 수동 자막 있으면 Whisper 미사용 → 처리 속도 빠름 (10~30초)
+- 자동 자막만 있으면 품질 이슈로 자동 자막을 쓰지 않고 Whisper STT로 전환
 - 자막 없으면 오디오 추출 → Whisper → GPT 교정 순으로 진행 (1~5분 소요)
 
 ---
@@ -352,12 +356,12 @@ curl -X POST http://localhost:8000/api/process \
     }
   ],
   "config": {
-    "max_blanks_per_sentence": 4,
+    "max_blanks_per_sentence": 2,
     "total_blanks":            38,
     "total_segments":          20
   },
   "stats": {
-    "transcript_source": "youtube_auto",
+    "transcript_source": "whisper",
     "total_words":       280,
     "language":          "ko",
     "gpt_refined":       false
@@ -382,7 +386,7 @@ curl -X POST http://localhost:8000/api/process \
 | 상황 | 처리 경로 | `transcript_source` | 처리 시간 |
 |---|---|---|---|
 | 수동 자막 있음 | VTT 다운로드 → 파싱 | `"youtube_manual"` | ~10초 |
-| 자동 자막만 있음 | VTT 다운로드 → 파싱 | `"youtube_auto"` | ~10초 |
+| 자동 자막만 있음 | 오디오 추출 → Whisper | `"whisper"` | 1~5분 |
 | 자막 없음 | 오디오 추출 → Whisper | `"whisper"` | 1~5분 |
 
 ---
@@ -414,7 +418,7 @@ AI 서버가 정상 기동 중인지, OpenAI API 키가 설정되어 있는지 �
 ```json
 {
   "status": "ok",
-  "openai_key_configured": true
+  "api_key_configured": true
 }
 ```
 
@@ -428,7 +432,7 @@ AI 서버 자체가 다운된 경우 `Connection refused` (HTTP 응답 없음).
 
 ### 비고
 
-- `openai_key_configured: false` 이면 이후 처리 API가 모두 실패하므로 백엔드에서 얼리 리턴 처리 권장
+- `api_key_configured: false` 이면 이후 처리 API가 모두 실패하므로 백엔드에서 얼리 리턴 처리 권장
 
 ---
 ---
@@ -477,13 +481,15 @@ OPENAI_API_KEY=sk-...
 backend/ai/
 ├── api.py                  ← FastAPI 서버 (엔드포인트 진입점)
 ├── pipeline.py             ← 파이프라인 오케스트레이터
+├── combined_processor.py   ← 챕터 단위 GPT 통합 처리 (교정 + 키워드 + 퀴즈)
 ├── stt.py                  ← Whisper STT
-├── transcript_refiner.py   ← GPT 텍스트 교정
-├── keyword_extractor.py    ← GPT 키워드 추출 (최대 4개/문장)
+├── transcript_refiner.py   ← 전체 내용 분석 + 챕터 분할 + 교정 맥락 생성
+├── keyword_extractor.py    ← 키워드 타임스탬프 매핑 helper / 교정 스킵 경로용 추출
 ├── blank_subtitle.py       ← 빈칸 자막 + 낙하 이벤트 생성
-├── quiz_generator.py       ← GPT 4지선다 퀴즈 생성 (5세그먼트당 1개)
+├── quiz_generator.py       ← 챕터-세그먼트 매핑 helper / 교정 스킵 경로용 퀴즈 생성
 ├── youtube_subtitle.py     ← YouTube VTT 처리
 ├── youtube_audio.py        ← YouTube 오디오 추출
+├── BACKEND_HANDOFF.md      ← 백엔드 전달용 요약 명세
 ├── requirements.txt
 └── .env
 ```

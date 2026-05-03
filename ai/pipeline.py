@@ -3,6 +3,7 @@
 TADAC AI 파이프라인 — 메인 오케스트레이터
 
 입력: YouTube URL / 로컬 오디오(.mp3 .wav .m4a) / 로컬 비디오(.mp4 .webm)
+      단, FastAPI 업로드 엔드포인트는 현재 백엔드 연동 범위를 줄이기 위해 비디오(.mp4 .webm)만 허용
 출력: 프론트엔드가 바로 쓰는 game_data.json
 
 실행 예시:
@@ -11,7 +12,7 @@ TADAC AI 파이프라인 — 메인 오케스트레이터
     python pipeline.py ./lecture.mp4 --no-refine --prompt "ADHD,도파민,전두엽"
 
 난이도 파라미터 (fall_speed, lead_time) 는 프론트엔드가 관리하므로 CLI에서 제거.
-blanks_per_sentence 는 항상 최대치(4)로 생성하고 프론트가 몇 개 보여줄지 결정.
+blanks_per_sentence 는 항상 최대치(2)로 생성하고 프론트가 몇 개 보여줄지 결정.
 """
 
 import argparse
@@ -483,7 +484,7 @@ def run_pipeline(
 
         # 파이프라인 메타데이터 추가
         game_data["stats"] = {
-            "transcript_source": transcript_source,  # "whisper" / "youtube_manual" / "youtube_auto"
+            "transcript_source": transcript_source,  # "whisper" / "youtube_manual"
             "content_title":     content_title,
             "total_words":       len(transcript.get("words", [])),
             "language":          language,
