@@ -99,7 +99,7 @@ def build_game_data(enriched_segments, fall_speed=1.0, lead_time=3.0):
             "end":           seg["end"],
             "original_text": seg["text"],    # 정답이 보이는 원본 자막
             "blank_text":    blank_text,      # "______" 처리된 자막
-            "blanks":        blanks,          # 빈칸 위치 + 정답 정보 (최대 4개)
+            "blanks":        blanks,          # 빈칸 위치 + 정답 정보 (최대 2개)
         })
         total_blanks += len(blanks)
 
@@ -121,7 +121,7 @@ def build_game_data(enriched_segments, fall_speed=1.0, lead_time=3.0):
         "subtitles":   subtitles,
         "fall_events": fall_events,
         "config": {
-            "max_blanks_per_sentence": 4,           # AI가 생성한 최대 빈칸 수
+            "max_blanks_per_sentence": 2,           # AI가 생성한 최대 빈칸 수
             "total_blanks":            total_blanks,
             "total_segments":          len(subtitles),
         },

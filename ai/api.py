@@ -12,7 +12,7 @@ TADAC FastAPI 서버 — AI 파이프라인 HTTP 엔드포인트
 
 난이도 파라미터 (blanks_per_sentence, fall_speed, lead_time)는
 프론트엔드가 실시간으로 관리하므로 API에서 받지 않음.
-AI는 항상 최대 빈칸(4개)으로 생성, 프론트가 몇 개 보여줄지 결정.
+AI는 항상 세그먼트당 최대 빈칸 2개로 생성, 프론트가 몇 개 보여줄지 결정.
 """
 
 import os
@@ -44,11 +44,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 업로드 허용 확장자
-ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".mp4", ".webm"}
+# 업로드 허용 확장자 — 백엔드 API는 일단 영상 파일만 받음
+ALLOWED_EXTENSIONS = {".mp4", ".webm"}
 
 # AI 내부 고정값 — 난이도는 프론트엔드가 관리
-MAX_BLANKS_PER_SENTENCE = 4   # 항상 최대 빈칸으로 생성, 프론트가 몇 개 보여줄지 결정
+MAX_BLANKS_PER_SENTENCE = 2   # 세그먼트당 최대 빈칸 수
 BASE_FALL_SPEED         = 1.0  # 기준값. 프론트가 target_time 기반으로 재계산
 BASE_LEAD_TIME          = 3.0  # 기준값. 프론트가 target_time 기반으로 재계산
 
@@ -76,7 +76,7 @@ async def health():
 
 
 # ── 파일 업로드 처리 ──────────────────────────────────────────────────────────
-# 오디오/비디오 파일을 받아서 game_data JSON 반환
+# 비디오 파일을 받아서 game_data JSON 반환
 
 @app.post("/api/process")
 async def process_file(

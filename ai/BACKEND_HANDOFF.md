@@ -56,6 +56,7 @@ Response: `game_data` JSON 전체를 반환합니다. 백엔드는 그대로 DB�
 주의:
 
 - `list=...&index=...`가 붙은 YouTube URL도 단일 영상만 처리하도록 AI 쪽에서 `--no-playlist` 처리했습니다.
+- YouTube 수동 자막만 직접 사용합니다. 자동 자막만 있으면 품질 이슈로 Whisper STT를 사용합니다.
 - 긴 영상은 수 분 이상 걸릴 수 있으므로 백엔드 타임아웃을 넉넉하게 잡거나 비동기 job 처리 권장.
 - `refine=false`는 GPT 교정을 생략해서 빠르지만 품질이 떨어질 수 있습니다.
 
@@ -70,10 +71,13 @@ Form fields:
 
 | field | required | default | description |
 |---|---:|---|---|
-| `file` | yes | - | `.mp3`, `.wav`, `.m4a`, `.mp4`, `.webm` |
+| `file` | yes | - | 영상 파일: `.mp4`, `.webm` |
 | `language` | no | `ko` | STT 언어 코드 |
 | `stt_prompt` | no | `null` | Whisper 용어 힌트 |
 | `refine` | no | `true` | GPT 교정 여부 |
+
+현재 백엔드 연동 범위를 줄이기 위해 업로드 API는 영상 파일만 허용합니다.
+오디오 파일 처리 로직은 파이프라인 내부에 남아 있지만 HTTP API에서는 받지 않습니다.
 
 ## game_data 저장 단위
 
@@ -129,4 +133,3 @@ fall_start_time = event.target_time - fall_duration
 | `500` | OpenAI, yt-dlp, ffmpeg 등 처리 실패 |
 
 백엔드는 실패 시 `detail` 메시지를 로깅하면 됩니다.
-
