@@ -13,6 +13,69 @@
 
 import re
 
+from transcript_refiner import filter_filler_keywords
+
+
+# ── 빈칸 밀도 제어 ────────────────────────────────────────────────────────────
+# 사용자가 자막을 보고 빈칸을 타이핑할 시간을 확보하기 위한 두 가지 캡:
+#   1) 짧은 세그먼트는 빈칸 1개만 — 자막이 너무 빨리 사라져 입력 시간이 부족
+#   2) 인접 빈칸 사이 최소 간격 — 키워드가 몰려서 발화되면 따라잡을 수 없음
+
+SHORT_SEG_THRESHOLD = 2.5    # 자막 길이(초) — 이하면 빈칸 1개로 제한
+MIN_BLANK_GAP       = 1.8    # 인접 빈칸의 발화 시점 최소 간격(초)
+
+
+def _apply_density_limits(enriched_segments):
+    # 0단계 — stopword 안전망: 캡 적용 전에 generic word 먼저 제거
+    # (transcript_refiner / keyword_extractor 단에서 이미 필터링되지만,
+    #  combined_processor 등 다른 경로에서 새어나올 가능성 차단)
+    dropped_stop = 0
+    for seg in enriched_segments:
+        original = seg.get("keywords", [])
+        filtered = filter_filler_keywords(original)
+        dropped_stop += len(original) - len(filtered)
+        seg["keywords"] = filtered
+
+    # 1단계 — 세그먼트별 캡: 짧은 자막은 빈칸 1개만
+    dropped_short = 0
+    for seg in enriched_segments:
+        duration   = seg.get("end", 0.0) - seg.get("start", 0.0)
+        max_blanks = 1 if duration < SHORT_SEG_THRESHOLD else 2
+
+        keywords = seg.get("keywords", [])
+        if len(keywords) > max_blanks:
+            sorted_kws = sorted(keywords, key=lambda k: k.get("start", seg.get("start", 0.0)))
+            dropped_short  += len(keywords) - max_blanks
+            seg["keywords"] = sorted_kws[:max_blanks]
+
+    # 2단계 — 전역 최소 간격: 인접 빈칸이 너무 가까우면 뒤쪽 drop
+    flat = []  # (target_time, seg_idx, kw_idx)
+    for seg_idx, seg in enumerate(enriched_segments):
+        for kw_idx, kw in enumerate(seg.get("keywords", [])):
+            target = kw.get("start", seg.get("start", 0.0))
+            flat.append((target, seg_idx, kw_idx))
+    flat.sort(key=lambda x: x[0])
+
+    keep      = set()
+    last_kept = -float("inf")
+    for target, seg_idx, kw_idx in flat:
+        if target - last_kept >= MIN_BLANK_GAP:
+            keep.add((seg_idx, kw_idx))
+            last_kept = target
+
+    dropped_gap = 0
+    for seg_idx, seg in enumerate(enriched_segments):
+        original = seg.get("keywords", [])
+        filtered = [kw for kw_idx, kw in enumerate(original) if (seg_idx, kw_idx) in keep]
+        dropped_gap   += len(original) - len(filtered)
+        seg["keywords"] = filtered
+
+    if dropped_stop or dropped_short or dropped_gap:
+        print(f"[TADAC] 빈칸 밀도 제어: stopword {dropped_stop}개, "
+              f"짧은 세그먼트 {dropped_short}개, 최소 간격 {dropped_gap}개 제거")
+
+    return enriched_segments
+
 
 # ── 빈칸 자막 만들기 ──────────────────────────────────────────────────────────
 # 키워드 위치를 찾아서 뒤에서부터 "______"으로 교체 (인덱스 밀림 방지)
@@ -83,6 +146,10 @@ def _make_fall_event(keyword, keyword_timestamp, segment_id, segment_start):
 def build_game_data(enriched_segments, fall_speed=1.0, lead_time=3.0):
     # fall_speed, lead_time 은 하위 호환을 위해 파라미터로 받지만 사용하지 않음
     # (프론트엔드가 자체 계산)
+
+    # 빈칸 밀도 제어 — 짧은 세그먼트 캡 + 전역 최소 간격
+    enriched_segments = _apply_density_limits(enriched_segments)
+
     subtitles    = []
     fall_events  = []
     total_blanks = 0
@@ -121,7 +188,9 @@ def build_game_data(enriched_segments, fall_speed=1.0, lead_time=3.0):
         "subtitles":   subtitles,
         "fall_events": fall_events,
         "config": {
-            "max_blanks_per_sentence": 2,           # AI가 생성한 최대 빈칸 수
+            "max_blanks_per_sentence": 2,                       # AI가 생성한 최대 빈칸 수
+            "short_seg_threshold":     SHORT_SEG_THRESHOLD,     # 이 이하 자막은 빈칸 1개로 캡
+            "min_blank_gap":           MIN_BLANK_GAP,           # 인접 빈칸 최소 간격 (초)
             "total_blanks":            total_blanks,
             "total_segments":          len(subtitles),
         },
