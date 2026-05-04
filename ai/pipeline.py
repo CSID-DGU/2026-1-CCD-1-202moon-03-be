@@ -482,6 +482,23 @@ def run_pipeline(
         )
         game_data["quizzes"] = all_quizzes
 
+        # 디버깅용 — 풀(key_terms)과 매칭 통계를 함께 저장
+        # 풀이 작은지 / 풀에 있는데 매칭 실패인지 사후 분석 가능
+        all_text = " ".join(seg.get("text", "") for seg in all_enriched_segments)
+        pool_stats = []
+        for term in global_keywords:
+            occurrences = all_text.count(term)
+            used = sum(
+                1 for seg in all_enriched_segments
+                for kw in seg.get("keywords", [])
+                if (kw["keyword"] if isinstance(kw, dict) else kw) == term
+            )
+            pool_stats.append({
+                "term":        term,
+                "in_text":     occurrences,   # 자막 텍스트 안 등장 횟수
+                "as_blank":    used,          # 실제 빈칸으로 뽑힌 횟수
+            })
+
         # 파이프라인 메타데이터 추가
         game_data["stats"] = {
             "transcript_source": transcript_source,  # "whisper" / "youtube_manual"
@@ -490,6 +507,12 @@ def run_pipeline(
             "language":          language,
             "gpt_refined":       (transcript_source == "whisper" and refine),
             "total_quizzes":     len(all_quizzes),
+        }
+        game_data["debug"] = {
+            "key_terms_pool":     global_keywords,   # 풀 전체
+            "key_terms_pool_size": len(global_keywords),
+            "name_corrections":   name_corrections,  # STT 교정 사전
+            "pool_term_stats":    pool_stats,        # 풀 단어별 등장/사용 통계
         }
 
         return game_data
