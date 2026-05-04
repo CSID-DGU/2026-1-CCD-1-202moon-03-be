@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+game_data*.json
+raw_transcript.json
+.claude/
+.DS_Store
