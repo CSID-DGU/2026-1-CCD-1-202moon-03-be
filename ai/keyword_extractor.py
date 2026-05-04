@@ -13,6 +13,8 @@ import os
 from openai import OpenAI
 from dotenv import load_dotenv
 
+from transcript_refiner import filter_filler_keywords
+
 load_dotenv()
 
 # OpenAI 클라이언트 초기화 (공식 API 사용)
@@ -28,22 +30,33 @@ BATCH_SIZE = 20
 # 고유명사, 전문 용어 우선 / 조사·접속사·일반 부사 제외
 
 SYSTEM_PROMPT = """You are a Korean language keyword extractor for an educational ADHD learning game.
-Extract key vocabulary from each sentence that learners should actively recall.
+Extract key vocabulary from each sentence that learners should ACTIVELY RECALL — words whose
+meaning carries the lecture's content. The chosen words become fill-in-the-blank questions.
 
-Rules:
-- Prioritize extracting words based on the educational domain:
-  * History (역사): Proper nouns (인명, 지명, 사건명), Years/Dates (연도, 시기)
-  * Social/Economics (사회/경제): Concepts (개념), Policies (정책), Key figures (핵심 인물)
-  * Science (화학/물리/생물 등): Elements (원소), Chemical formulas (화학식), Principles (원리/법칙)
-- Exclude: particles (조사), conjunctions (접속사), common adverbs, filler words
-- Exclude: casual phrases, slang, or idioms with no educational value (e.g. "기고만장", "아무튼", "결국")
-- NEVER select greetings or conversational phrases as keywords
-  (e.g. "안녕하세요", "반갑습니다", "자 그럼", "네 맞습니다", "감사합니다")
-  → These may appear in the text, but must NOT be chosen as keywords
-- If a segment contains ONLY exclamations, sound effects, or filler with no educational content
-  (e.g. "짠!", "우하하", "아유", "오", "우와", "어...")
-  → Return an EMPTY keywords array: {"segment_id": N, "keywords": []}
-- Return exactly the requested number of keywords per sentence (or fewer if sentence is too short or lacks educational content)
+# Selection Priority (by educational domain)
+- History (역사): Proper nouns (인명/지명/사건명), Years/Dates (연도/시기)
+- Social/Economics (사회/경제): Concepts (개념), Policies (정책), Key figures (핵심 인물)
+- Science (화학/물리/생물 등): Elements (원소), Chemical formulas (화학식), Principles (원리/법칙)
+
+# Quality Over Quantity — THIS IS THE MOST IMPORTANT RULE
+- Return UP TO N keywords per sentence. Fewer is ALWAYS better than padding with weak words.
+- If a sentence has only 1 meaningful keyword → return 1. DO NOT pad.
+- If a sentence has 0 educationally meaningful keywords → return an empty array.
+- A sentence that asks the learner to type a generic word like "양" is a FAILED question
+  because they can guess from context without learning anything.
+
+# Hard Exclusions — NEVER select these even if they fit the requested count
+- Particles (조사), conjunctions (접속사), common adverbs, filler words
+- Greetings / conversational phrases ("안녕하세요", "반갑습니다", "자 그럼", "네 맞습니다", "감사합니다")
+- Generic placeholder nouns: "양", "것", "정도", "부분", "경우", "방식", "상태", "내용", "물질", "단계"
+- Speech-act verbs/nouns: "이야기", "해보도록", "알아보도록", "살펴보도록", "설명"
+- Question / demonstrative words: "어떤", "이런", "저런", "그런", "무엇", "어느"
+- Time / sequence adverbs: "처음", "시작", "마지막", "다음", "이제", "결국", "먼저"
+- Evaluation adjectives (with no domain content): "중요", "필요", "가능", "다양"
+- Slang / idioms with no educational value ("기고만장", "아무튼", "결국")
+- Filler-only segments ("짠!", "우하하", "아유", "오", "우와", "어...") → return empty array
+
+# Format
 - Return ONLY the keywords as they appear in the original text (exact match preferred)
 - Response must be valid JSON
 
@@ -61,7 +74,10 @@ Output format:
 # 세그먼트 목록을 [번호] 텍스트 형태로 나열
 
 def _build_user_prompt(segments, blanks_per_sentence):
-    lines = [f"Extract {blanks_per_sentence} keywords per sentence.\n"]
+    lines = [
+        f"Extract UP TO {blanks_per_sentence} keywords per sentence.",
+        "Quality over quantity — return fewer (or empty) rather than padding with filler.\n",
+    ]
     for seg in segments:
         lines.append(f"[{seg['id']}] {seg['text']}")
     return "\n".join(lines)
@@ -86,7 +102,12 @@ def _call_gpt_batch(segments, blanks_per_sentence):
     raw = response.choices[0].message.content
     try:
         data = json.loads(raw)
-        return data.get("results", [])
+        results = data.get("results", [])
+        # GPT 무관 결정론적 stopword 필터 — generic word 강제 제거
+        for item in results:
+            if isinstance(item, dict) and "keywords" in item:
+                item["keywords"] = filter_filler_keywords(item["keywords"])
+        return results
     except json.JSONDecodeError as e:
         print(f"[TADAC] GPT JSON 파싱 오류: {e}")
         return []

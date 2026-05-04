@@ -11,6 +11,7 @@ STT = "초안", GPT = "교정 편집자"
 
 import json
 import os
+from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -20,6 +21,46 @@ load_dotenv()
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
 )
+
+
+# ── 빈칸 키워드 stopword ──────────────────────────────────────────────────────
+# GPT(특히 gpt-4o-mini)가 프롬프트 지시를 무시하고 generic word를 골라내는 경우가
+# 잦아서, 결정론적 후처리로 강제 제거. 학습자가 강의를 듣지 않고도 추측할 수
+# 있는 단어들이라 빈칸으로 만들면 학습 효과가 없음.
+#
+# 단어 목록은 ai/keyword_stopwords.txt 에 외부화 — 도메인별 보강을 위해 비코더도
+# 편집 가능. 새 도메인을 다룰 때 학습 효과가 떨어지는 단어를 발견하면 그 파일에
+# 추가.
+
+STOPWORDS_FILE = Path(__file__).parent / "keyword_stopwords.txt"
+
+
+def _load_stopwords(path):
+    if not path.exists():
+        print(f"[TADAC] stopword 파일 없음: {path} (필터 비활성)")
+        return frozenset()
+
+    words = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        token = line.strip()
+        if not token or token.startswith("#"):
+            continue
+        words.add(token)
+    return frozenset(words)
+
+
+KEYWORD_STOPWORDS = _load_stopwords(STOPWORDS_FILE)
+print(f"[TADAC] stopword 로드: {len(KEYWORD_STOPWORDS)}개 ({STOPWORDS_FILE.name})")
+
+
+def filter_filler_keywords(keywords):
+    """KEYWORD_STOPWORDS에 해당하는 키워드 제거. dict/str 양쪽 지원."""
+    out = []
+    for kw in keywords:
+        token = kw["keyword"] if isinstance(kw, dict) else kw
+        if token and token not in KEYWORD_STOPWORDS:
+            out.append(kw)
+    return out
 
 
 # ── 세그먼트 압축 (챕터 감지용) ───────────────────────────────────────────────
@@ -69,10 +110,23 @@ ANALYSIS_PROMPT = """너는 강의 녹취록을 분석하는 전문가다.
 
 [작업 1] 교정 맥락 파악
 - 강의 주제를 한 문장으로 요약
-- 학습자가 반드시 기억해야 할 핵심 키워드를 최대 50개 추출하라.
-  우선순위: 인물명 > 사건명 > 제도/정책명 > 지명/왕조 > 핵심 개념
-  → 이 키워드들은 빈칸 문제로 출제되므로, 교육적으로 의미 있는 것만 포함하라.
-  → 조사, 부사, 감탄사, 일상 구어체 표현은 절대 포함하지 마라.
+- 학습자가 반드시 기억해야 할 핵심 키워드를 최대 100개 추출하라.
+  우선순위: 인물명 > 사건명 > 제도/정책명 > 지명/왕조 > 전문 용어/원리/공식 > 핵심 개념
+  → 이 키워드들은 빈칸 문제로 출제되므로, **교육적으로 의미 있는 것만** 포함하라.
+  → 학습자가 강의를 듣지 않으면 떠올릴 수 없는 단어를 우선하라.
+  → 품질 > 수량. 50개를 채우려고 약한 단어를 넣지 마라. 부족하면 부족한 대로 둬라.
+
+  ★ 절대 포함 금지 (filler/generic 단어):
+  - 조사, 접속사, 부사, 감탄사, 일상 구어체 표현
+  - 일반 명사: "양", "것", "정도", "부분", "경우", "방식", "상태", "내용", "물질", "단계"
+  - 발화 동사/표현: "이야기", "해보도록", "알아보도록", "살펴보도록", "설명"
+  - 의문/지시어: "어떤", "이런", "저런", "그런", "무엇", "어느"
+  - 시간/순서 부사: "처음", "시작", "마지막", "다음", "이제", "결국", "먼저"
+  - 평가형 형용사: "중요", "필요", "가능", "다양"
+  - 특정 강의 맥락 없이 의미가 통하는 일반어는 모두 제외
+
+  → 위 단어들은 강의 주제와 무관하게 어디서나 등장하므로 빈칸으로 만들면
+     학습자가 추측만으로 맞출 수 있어 학습 효과가 없다.
 
 [작업 2] 고유명사 추론
 - 녹취록은 음성 인식(STT)으로 생성되어 인물명, 지명, 역사 용어 등이 잘못 적혀 있을 수 있다
@@ -190,7 +244,14 @@ def _analyze_content(segments, title=None):
 
     # 교정용 맥락 텍스트 구성
     topic = data.get("topic_summary", "")
-    key_terms = data.get("key_terms", [])
+    raw_key_terms = data.get("key_terms", [])
+
+    # GPT 무관 결정론적 stopword 필터 — generic word 강제 제거
+    key_terms = filter_filler_keywords(raw_key_terms)
+    dropped = [kw for kw in raw_key_terms if kw not in key_terms]
+    if dropped:
+        print(f"[TADAC] key_terms stopword 제거 {len(dropped)}개: {', '.join(dropped)}")
+
     terms = key_terms  # 하위 호환용 alias
     noun_corrections_list = data.get("proper_noun_corrections", [])
 
