@@ -141,31 +141,58 @@ def _save_raw_transcript(transcript, output_dir=None):
 # 예: key_term="문벌귀족" vs 텍스트 내 "문벌기족" → 자동 교정 대상
 
 def _build_fuzzy_corrections(segments, key_terms):
-    """key_terms를 기준으로 STT가 1글자만 틀린 오인식을 찾아 교정 사전 생성.
+    """key_terms를 ground truth로 삼아 STT 오인식을 결정론적으로 찾아 교정.
 
-    2글자 한자어(광종/의종 등)는 오탐이 많으므로 3글자 이상만 대상으로 한다.
-    또한 후보 문자열이 다른 key_term과 정확히 일치하면 오탐이므로 제외한다.
+    설계 원칙:
+    1. 길이 — 2글자 단어는 오탐 위험이 커서 3글자 이상만 대상.
+    2. 띄어쓰기 비대칭 — 풀 term이 공백을 포함해도 STT는 보통 공백 없이 받아쓰므로
+       풀 term의 공백 제거 변형도 매칭 후보에 포함.
+    3. 빈도 비교 — 풀 term이 자막에 정확히 등장해도, 변형이 정답보다 더 자주 나오면
+       그 변형을 STT 오타로 등록. (정답이 한두 번 끼어 있는 경우에 대응)
+    4. diff 허용치 — 1글자 차이는 항상 허용. 2글자 차이는 4글자 이상 단어에서만 허용
+       (짧은 단어에서 2자 차이는 별개 entity일 가능성이 높음).
+    5. entity 스왑 보호 — 후보가 다른 풀 term과 일치하면 별개 단어이므로 skip.
     """
     all_text = " ".join(seg.get("text", "") for seg in segments)
+
+    # 매칭 후보: 풀 term과 그 공백 제거 변형 (원본 term으로 매핑 보존)
+    term_variants = {}  # variant 표기 → 자막 치환 시 적용할 원본 term
+    for term in key_terms:
+        if len(term) < 3:
+            continue
+        term_variants[term] = term
+        no_space = term.replace(" ", "")
+        if no_space != term and len(no_space) >= 3:
+            term_variants.setdefault(no_space, term)
+
+    all_variants = set(term_variants.keys())
     key_terms_set = set(key_terms)
     corrections = {}
 
-    for term in key_terms:
-        if len(term) < 3 or term in all_text:
-            continue
+    for variant, original in term_variants.items():
+        v_len = len(variant)
+        variant_count = all_text.count(variant)
 
-        term_len = len(term)
         seen = set()
-        for i in range(len(all_text) - term_len + 1):
-            candidate = all_text[i:i + term_len]
-            if candidate in seen or candidate == term:
+        for i in range(len(all_text) - v_len + 1):
+            candidate = all_text[i:i + v_len]
+            if candidate in seen or candidate == variant:
                 continue
             seen.add(candidate)
-            if candidate in key_terms_set:
+            # 별개 entity 보호 — 후보가 풀의 다른 단어/변형이면 skip
+            if candidate in all_variants or candidate in key_terms_set:
                 continue
-            diff_count = sum(1 for a, b in zip(term, candidate) if a != b)
-            if diff_count == 1:
-                corrections[candidate] = term
+
+            diff_count = sum(1 for a, b in zip(variant, candidate) if a != b)
+            if diff_count == 0:
+                continue
+            if not (diff_count == 1 or (diff_count == 2 and v_len >= 4)):
+                continue
+
+            # 빈도 검증 — 정답이 자막에 없거나 후보가 더 자주 등장해야 STT 오타로 인정
+            cand_count = all_text.count(candidate)
+            if variant_count == 0 or cand_count > variant_count:
+                corrections[candidate] = original
 
     return corrections
 
@@ -281,6 +308,36 @@ def _apply_gpt_results(ch_segs, combined_result, all_words, name_corrections=Non
     return enriched
 
 
+def _build_corrected_subtitle_data(enriched_segments):
+    """교정이 적용된 세그먼트 자막을 빈칸 없이 송출하기 위한 JSON 구조 생성."""
+    subtitles = []
+    for seg in enriched_segments:
+        subtitles.append({
+            "segment_id": seg.get("segment_id", seg.get("id", len(subtitles))),
+            "start":      seg.get("start", 0.0),
+            "end":        seg.get("end", 0.0),
+            "text":       seg.get("text", ""),
+        })
+
+    return {
+        "subtitles": subtitles,
+        "config": {
+            "total_segments": len(subtitles),
+        },
+    }
+
+
+def _branch_output_paths(output_path):
+    """CLI -o 경로를 기준으로 두 브랜치 JSON 파일명을 만든다."""
+    output_path = Path(output_path)
+    suffix = output_path.suffix or ".json"
+    base = output_path.with_suffix("")
+    return {
+        "corrected_subtitles": base.with_name(f"{base.name}_corrected_subtitles{suffix}"),
+        "blank_game_data":     base.with_name(f"{base.name}_blank_game_data{suffix}"),
+    }
+
+
 # ── 메인 파이프라인 ───────────────────────────────────────────────────────────
 # Step 0: 입력 분기 → Step 1: STT → Step 1.5: 내용 분석 → Step 2: 통합 처리 → Step 3: 게임 데이터 생성
 #
@@ -295,6 +352,7 @@ def run_pipeline(
     lead_time           = BASE_LEAD_TIME,
     stt_prompt          = None,
     refine              = True,   # Whisper 결과를 GPT로 교정할지 여부
+    return_branches     = False,  # True면 교정 자막 / 빈칸 게임 데이터 두 브랜치를 함께 반환
 ):
     tmp_dirs = []  # 처리 완료 후 삭제할 임시 폴더 목록
 
@@ -474,7 +532,10 @@ def run_pipeline(
                 all_quizzes.extend(ch_quizzes)
                 all_enriched_segments.extend(ch_enriched)
 
-        # ── Step 5: 게임 데이터 생성 ──────────────────────────────────────────
+        # ── Step 5-A: 교정 자막 브랜치 생성 ───────────────────────────────────
+        corrected_subtitle_data = _build_corrected_subtitle_data(all_enriched_segments)
+
+        # ── Step 5-B: 빈칸 게임 데이터 브랜치 생성 ─────────────────────────────
         game_data = blank_subtitle.build_game_data(
             all_enriched_segments,
             fall_speed=fall_speed,
@@ -514,6 +575,17 @@ def run_pipeline(
             "name_corrections":   name_corrections,  # STT 교정 사전
             "pool_term_stats":    pool_stats,        # 풀 단어별 등장/사용 통계
         }
+
+        corrected_subtitle_data["stats"] = game_data["stats"].copy()
+        corrected_subtitle_data["debug"] = {
+            "name_corrections": game_data["debug"]["name_corrections"],
+        }
+
+        if return_branches:
+            return {
+                "corrected_subtitles": corrected_subtitle_data,
+                "blank_game_data":     game_data,
+            }
 
         return game_data
 
@@ -721,15 +793,17 @@ def run_pipeline_streaming(
                 fall_speed=fall_speed,
                 lead_time=lead_time,
             )
+            ch_corrected_subtitle_data = _build_corrected_subtitle_data(ch_enriched)
 
             # ── chapter_ready 이벤트 ──────────────────────────────────────────
             yield {
-                "type":          "chapter_ready",
-                "chapter_index": ch_idx,
-                "chapter_title": chapter["title"],
-                "subtitles":     ch_game_data.get("subtitles", []),
-                "fall_events":   ch_game_data.get("fall_events", []),
-                "quizzes":       ch_quizzes,
+                "type":                "chapter_ready",
+                "chapter_index":       ch_idx,
+                "chapter_title":       chapter["title"],
+                "corrected_subtitles": ch_corrected_subtitle_data.get("subtitles", []),
+                "subtitles":           ch_game_data.get("subtitles", []),
+                "fall_events":         ch_game_data.get("fall_events", []),
+                "quizzes":             ch_quizzes,
             }
 
         # ── complete 이벤트 ───────────────────────────────────────────────────
@@ -778,7 +852,13 @@ def main():
         # 스트리밍 모드: 챕터별로 출력
         print("[TADAC] 스트리밍 모드")
         
-        aggregated_data = {
+        aggregated_corrected_subtitle_data = {
+            "subtitles": [],
+            "config": {
+                "total_segments": 0,
+            },
+        }
+        aggregated_blank_game_data = {
             "subtitles": [],
             "fall_events": [],
             "quizzes": [],
@@ -800,32 +880,64 @@ def main():
             
             # 이벤트 타입에 따라 데이터 수합
             if event["type"] == "chapter_ready":
-                aggregated_data["subtitles"].extend(event.get("subtitles", []))
-                aggregated_data["fall_events"].extend(event.get("fall_events", []))
-                aggregated_data["quizzes"].extend(event.get("quizzes", []))
+                aggregated_corrected_subtitle_data["subtitles"].extend(event.get("corrected_subtitles", []))
+                aggregated_blank_game_data["subtitles"].extend(event.get("subtitles", []))
+                aggregated_blank_game_data["fall_events"].extend(event.get("fall_events", []))
+                aggregated_blank_game_data["quizzes"].extend(event.get("quizzes", []))
             elif event["type"] == "complete":
-                aggregated_data["stats"] = event.get("stats", {})
+                stats = event.get("stats", {})
+                aggregated_corrected_subtitle_data["stats"] = stats
+                aggregated_blank_game_data["stats"] = stats
                 
         print("[TADAC] 스트리밍 완료")
+
+        aggregated_corrected_subtitle_data["config"]["total_segments"] = len(
+            aggregated_corrected_subtitle_data["subtitles"]
+        )
+        aggregated_blank_game_data["config"]["total_segments"] = len(
+            aggregated_blank_game_data["subtitles"]
+        )
+        aggregated_blank_game_data["config"]["total_blanks"] = sum(
+            len(sub.get("blanks", [])) for sub in aggregated_blank_game_data["subtitles"]
+        )
         
-        # 전체 데이터 합쳐서 파일로 저장
-        output_path = Path(args.output)
-        output_path.write_text(json.dumps(aggregated_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[TADAC] 스트리밍 전체 수합본 저장 완료: {output_path.resolve()}")
+        # 전체 데이터 합쳐서 브랜치별 파일로 저장
+        output_paths = _branch_output_paths(args.output)
+        output_paths["corrected_subtitles"].write_text(
+            json.dumps(aggregated_corrected_subtitle_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        output_paths["blank_game_data"].write_text(
+            json.dumps(aggregated_blank_game_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[TADAC] 교정 자막 저장 완료: {output_paths['corrected_subtitles'].resolve()}")
+        print(f"[TADAC] 빈칸 게임 데이터 저장 완료: {output_paths['blank_game_data'].resolve()}")
 
     else:
-        # 일괄 모드 (기존)
-        game_data = run_pipeline(
+        # 일괄 모드
+        branch_data = run_pipeline(
             source     = args.source,
             language   = args.lang,
             stt_prompt = args.prompt,
             refine     = not args.no_refine,
+            return_branches = True,
+        )
+        corrected_subtitle_data = branch_data["corrected_subtitles"]
+        game_data = branch_data["blank_game_data"]
+
+        output_paths = _branch_output_paths(args.output)
+        output_paths["corrected_subtitles"].write_text(
+            json.dumps(corrected_subtitle_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        output_paths["blank_game_data"].write_text(
+            json.dumps(game_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
-        output_path = Path(args.output)
-        output_path.write_text(json.dumps(game_data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        print(f"[TADAC] 저장 완료: {output_path.resolve()}")
+        print(f"[TADAC] 교정 자막 저장 완료: {output_paths['corrected_subtitles'].resolve()}")
+        print(f"[TADAC] 빈칸 게임 데이터 저장 완료: {output_paths['blank_game_data'].resolve()}")
         print(f"[TADAC] 결과: 세그먼트 {game_data['config']['total_segments']}개, "
               f"빈칸 {game_data['config']['total_blanks']}개, "
               f"낙하 이벤트 {len(game_data['fall_events'])}개")

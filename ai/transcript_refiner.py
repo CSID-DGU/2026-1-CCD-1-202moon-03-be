@@ -181,8 +181,10 @@ def _is_safe_name_correction(wrong, correct):
     if abs(len(wrong_norm) - len(correct_norm)) > 1:
         return False
 
-    # Single-token replacements only. Multi-token rewrites are too risky here.
-    if len(str(wrong).split()) != 1 or len(str(correct).split()) != 1:
+    # 정규화된(공백 제거) 형태가 단일 토큰이어야 함.
+    # 원본 토큰 수가 아닌 정규화 후로 검사 — "쿠션왕조"(wrong) → "쿠샨 왕조"(correct) 같이
+    # 공백 유무만 다른 정상 매핑을 막는 false negative 방지.
+    if len(wrong_norm.split()) != 1 or len(correct_norm.split()) != 1:
         return False
 
     return True
