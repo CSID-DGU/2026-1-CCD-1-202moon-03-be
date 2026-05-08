@@ -13,4 +13,6 @@ urlpatterns = [
     path("<int:pk>/quiz/<int:qid>/answer/", quiz_views.QuizAnswerView.as_view(), name="quiz-answer"),
     path("<int:pk>/result/", views.SessionResultView.as_view(), name="session-result"),
     path("<int:pk>/summary/", views.SessionSummaryView.as_view(), name="session-summary"),
+    path("stream/", views.SessionStreamView.as_view(), name="session-stream"),
+    path("stream/file/", views.VideoFileStreamView.as_view(), name="session-stream-file"),
 ]
