@@ -65,7 +65,7 @@ class SessionDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoSession
         fields = [
-            "id", "title", "source_type", "source_url",
+            "id", "title", "source_type", "source_url", "file_path",
             "thumbnail_url", "duration_sec", "mode",
             "ai_status", "created_at",
         ]
