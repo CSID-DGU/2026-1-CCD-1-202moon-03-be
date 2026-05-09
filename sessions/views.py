@@ -339,3 +339,72 @@ class VideoFileStreamView(APIView):
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
         return response
+    
+class SessionFileResumeView(APIView):
+    """
+    POST /api/sessions/{id}/stream/resume/
+    새로고침 후 sessionId만으로 로컬 파일 스트리밍 재개
+    file_path가 서버에 저장되어 있으면 그걸로 AI 서버에 다시 요청
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        session = get_session_or_404(pk, request.user)
+        if not session:
+            return error_response("세션을 찾을 수 없습니다.", status=404)
+
+        # 유튜브 URL 세션이면 stream/ 으로 재개 가능
+        if session.source_type == VideoSession.SOURCE_YOUTUBE:
+            return error_response(
+                "유튜브 URL 세션은 /api/sessions/stream/ 으로 재개하세요.",
+                {"source_url": session.source_url},
+                status=400,
+            )
+
+        # 로컬 파일 세션인데 file_path 없으면
+        if not session.file_path:
+            return error_response("저장된 파일을 찾을 수 없습니다.", status=404)
+
+        # 서버에 저장된 파일 경로
+        import os
+        from django.conf import settings as django_settings
+
+        # file_path = "/media/videos/1_lecture.mp4"
+        # 실제 파일 경로로 변환
+        relative_path = session.file_path.lstrip("/")
+        # media/ 제거
+        relative_path = relative_path.replace("media/", "", 1)
+        full_path = os.path.join(django_settings.MEDIA_ROOT, relative_path)
+
+        if not os.path.exists(full_path):
+            return error_response("서버에 파일이 존재하지 않습니다.", status=404)
+
+        language = request.data.get("language", "ko")
+
+        def event_stream():
+            try:
+                with open(full_path, "rb") as f:
+                    file_data = f.read()
+
+                with httpx.Client(timeout=django_settings.AI_SERVER_TIMEOUT) as client:
+                    with client.stream(
+                        "POST",
+                        f"{django_settings.AI_SERVER_URL}/api/process/stream",
+                        files={"file": (os.path.basename(full_path), file_data, "video/mp4")},
+                        data={"language": language},
+                    ) as response:
+                        response.raise_for_status()
+                        for line in response.iter_lines():
+                            if line:
+                                yield f"{line}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type="text/event-stream",
+        )
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
+        return response
