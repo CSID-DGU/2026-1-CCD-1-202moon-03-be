@@ -16,4 +16,5 @@ urlpatterns = [
     path("stream/", views.SessionStreamView.as_view(), name="session-stream"),
     path("stream/file/", views.VideoFileStreamView.as_view(), name="session-stream-file"),
     path("<int:pk>/stream/resume/", views.SessionFileResumeView.as_view(), name="session-stream-resume"),
+    path("<int:pk>/video/", views.SessionVideoView.as_view(), name="session-video"),
 ]

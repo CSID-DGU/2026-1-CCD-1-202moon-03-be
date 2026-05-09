@@ -1,6 +1,6 @@
 import json
 import httpx
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -235,19 +235,16 @@ class SessionStreamView(APIView):
     """
     POST /api/sessions/stream/
     AI 서버에서 챕터별 스트리밍 데이터를 받아서 프론트에 SSE로 전달
-    
-    쉽게 말하면:
-    프론트 → DRF → AI서버 → DRF → 프론트
-    DRF가 중간에서 그냥 전달해주는 역할
+    complete 이벤트 수신 시 ai_status → done 으로 업데이트
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         url = request.data.get("url")
+        session_id = request.data.get("session_id")
         language = request.data.get("language", "ko")
 
         if not url:
-            # SSE는 일반 에러 응답 못 쓰니까 에러도 SSE 형식으로
             def error_stream():
                 yield f"data: {json.dumps({'type': 'error', 'message': 'URL을 입력해주세요.'})}\n\n"
             return StreamingHttpResponse(
@@ -256,13 +253,19 @@ class SessionStreamView(APIView):
                 status=400,
             )
 
+        # session_id로 세션 찾기
+        session = None
+        if session_id:
+            session = get_session_or_404(session_id, request.user)
+
         def event_stream():
-            """
-            AI 서버에서 받은 SSE 스트림을 그대로 프론트에 전달
-            """
             try:
+                # 처리 시작 → processing으로 변경
+                if session:
+                    session.ai_status = VideoSession.AI_PROCESSING
+                    session.save(update_fields=["ai_status"])
+
                 with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
-                    # AI 서버에 스트리밍 요청
                     with client.stream(
                         "POST",
                         f"{settings.AI_SERVER_URL}/api/process-url/stream",
@@ -270,28 +273,44 @@ class SessionStreamView(APIView):
                         headers={"Content-Type": "application/json"},
                     ) as response:
                         response.raise_for_status()
-
-                        # AI 서버에서 오는 데이터를 그대로 프론트로 전달
                         for line in response.iter_lines():
                             if line:
+                                # complete 이벤트 감지 → done으로 업데이트
+                                if session and (
+                                    '"type": "complete"' in line or
+                                    '"type":"complete"' in line
+                                ):
+                                    session.ai_status = VideoSession.AI_DONE
+                                    session.save(update_fields=["ai_status"])
                                 yield f"{line}\n\n"
 
             except httpx.TimeoutException:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = "AI 서버 응답 시간이 초과되었습니다."
+                    session.save(update_fields=["ai_status", "ai_error_message"])
                 yield f"data: {json.dumps({'type': 'error', 'message': 'AI 서버 응답 시간이 초과되었습니다.'})}\n\n"
 
             except httpx.HTTPStatusError as e:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = f"AI 서버 오류: {e.response.status_code}"
+                    session.save(update_fields=["ai_status", "ai_error_message"])
                 yield f"data: {json.dumps({'type': 'error', 'message': f'AI 서버 오류: {e.response.status_code}'})}\n\n"
 
             except Exception as e:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = str(e)
+                    session.save(update_fields=["ai_status", "ai_error_message"])
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         response = StreamingHttpResponse(
             event_stream(),
             content_type="text/event-stream",
         )
-        # SSE 필수 헤더
         response["Cache-Control"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"  # Nginx 버퍼링 방지
+        response["X-Accel-Buffering"] = "no"
         return response
 
 
@@ -299,11 +318,13 @@ class VideoFileStreamView(APIView):
     """
     POST /api/sessions/stream/file/
     파일 업로드 → AI 서버로 전달 → SSE 스트리밍 반환
+    complete 이벤트 수신 시 ai_status → done 으로 업데이트
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         file = request.FILES.get("file")
+        session_id = request.data.get("session_id")
         language = request.data.get("language", "ko")
 
         if not file:
@@ -315,21 +336,57 @@ class VideoFileStreamView(APIView):
                 status=400,
             )
 
+        session = None
+        if session_id:
+            session = get_session_or_404(session_id, request.user)
+
+        file_data = file.read()
+        file_name = file.name
+        file_content_type = file.content_type
+
         def event_stream():
             try:
+                if session:
+                    session.ai_status = VideoSession.AI_PROCESSING
+                    session.save(update_fields=["ai_status"])
+
                 with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
                     with client.stream(
                         "POST",
                         f"{settings.AI_SERVER_URL}/api/process/stream",
-                        files={"file": (file.name, file.read(), file.content_type)},
+                        files={"file": (file_name, file_data, file_content_type)},
                         data={"language": language},
                     ) as response:
                         response.raise_for_status()
                         for line in response.iter_lines():
                             if line:
+                                if session and (
+                                    '"type": "complete"' in line or
+                                    '"type":"complete"' in line
+                                ):
+                                    session.ai_status = VideoSession.AI_DONE
+                                    session.save(update_fields=["ai_status"])
                                 yield f"{line}\n\n"
 
+            except httpx.TimeoutException:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = "AI 서버 응답 시간이 초과되었습니다."
+                    session.save(update_fields=["ai_status", "ai_error_message"])
+                yield f"data: {json.dumps({'type': 'error', 'message': 'AI 서버 응답 시간이 초과되었습니다.'})}\n\n"
+
+            except httpx.HTTPStatusError as e:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = f"AI 서버 오류: {e.response.status_code}"
+                    session.save(update_fields=["ai_status", "ai_error_message"])
+                yield f"data: {json.dumps({'type': 'error', 'message': f'AI 서버 오류: {e.response.status_code}'})}\n\n"
+
             except Exception as e:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = str(e)
+                    session.save(update_fields=["ai_status", "ai_error_message"])
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         response = StreamingHttpResponse(
@@ -414,4 +471,62 @@ class SessionFileResumeView(APIView):
         )
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
+        return response
+    
+class SessionVideoView(APIView):
+    """
+    GET /api/sessions/{id}/video/
+    로컬 파일 세션의 영상을 HTTP로 서빙
+    Range 요청 지원 → 영상 seek 가능
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        import os
+        import mimetypes
+        from django.conf import settings as django_settings
+
+        session = get_session_or_404(pk, request.user)
+        if not session:
+            return error_response("세션을 찾을 수 없습니다.", status=404)
+
+        if not session.file_path:
+            return error_response("저장된 파일이 없습니다.", status=404)
+
+        relative_path = session.file_path.lstrip("/")
+        relative_path = relative_path.replace("media/", "", 1)
+        full_path = os.path.join(django_settings.MEDIA_ROOT, relative_path)
+
+        if not os.path.exists(full_path):
+            return error_response("파일을 찾을 수 없습니다.", status=404)
+
+        content_type, _ = mimetypes.guess_type(full_path)
+        content_type = content_type or "video/mp4"
+        file_size = os.path.getsize(full_path)
+
+        range_header = request.META.get("HTTP_RANGE", "").strip()
+
+        if range_header:
+            range_match = range_header.replace("bytes=", "").split("-")
+            start = int(range_match[0])
+            end = int(range_match[1]) if range_match[1] else file_size - 1
+            length = end - start + 1
+
+            with open(full_path, "rb") as f:
+                f.seek(start)
+                data = f.read(length)
+
+            response = HttpResponse(data, status=206, content_type=content_type)
+            response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            response["Accept-Ranges"] = "bytes"
+            response["Content-Length"] = str(length)
+            return response
+
+        from django.http import FileResponse
+        response = FileResponse(
+            open(full_path, "rb"),
+            content_type=content_type,
+        )
+        response["Accept-Ranges"] = "bytes"
+        response["Content-Length"] = str(file_size)
         return response

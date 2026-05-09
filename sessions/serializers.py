@@ -61,14 +61,21 @@ class SessionCreateSerializer(serializers.ModelSerializer):
 
 
 class SessionDetailSerializer(serializers.ModelSerializer):
-    """상세 조회용"""
+    video_url = serializers.SerializerMethodField()
+
     class Meta:
         model = VideoSession
         fields = [
-            "id", "title", "source_type", "source_url", "file_path",
+            "id", "title", "source_type", "source_url",
+            "file_path", "video_url",
             "thumbnail_url", "duration_sec", "mode",
             "ai_status", "created_at",
         ]
+
+    def get_video_url(self, obj):
+        if obj.source_type == "file" and obj.file_path:
+            return f"/api/sessions/{obj.id}/video/"
+        return None
 
 
 class SessionTitleUpdateSerializer(serializers.ModelSerializer):
