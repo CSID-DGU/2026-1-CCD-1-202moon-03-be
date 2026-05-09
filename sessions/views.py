@@ -365,14 +365,11 @@ class SessionFileResumeView(APIView):
         if not session.file_path:
             return error_response("저장된 파일을 찾을 수 없습니다.", status=404)
 
-        # 서버에 저장된 파일 경로
         import os
         from django.conf import settings as django_settings
 
-        # file_path = "/media/videos/1_lecture.mp4"
-        # 실제 파일 경로로 변환
+        # file_path = "/media/videos/1_lecture.mp4" → 실제 파일 경로로 변환
         relative_path = session.file_path.lstrip("/")
-        # media/ 제거
         relative_path = relative_path.replace("media/", "", 1)
         full_path = os.path.join(django_settings.MEDIA_ROOT, relative_path)
 
@@ -380,23 +377,33 @@ class SessionFileResumeView(APIView):
             return error_response("서버에 파일이 존재하지 않습니다.", status=404)
 
         language = request.data.get("language", "ko")
+        file_size = os.path.getsize(full_path)
 
         def event_stream():
             try:
+                # 파일 전체를 메모리에 올리지 않고 스트림으로 직접 전달
                 with open(full_path, "rb") as f:
-                    file_data = f.read()
+                    with httpx.Client(timeout=django_settings.AI_SERVER_TIMEOUT) as client:
+                        with client.stream(
+                            "POST",
+                            f"{django_settings.AI_SERVER_URL}/api/process/stream",
+                            content=f,
+                            headers={
+                                "Content-Type": "video/mp4",
+                                "Content-Length": str(file_size),
+                            },
+                            params={"language": language},
+                        ) as response:
+                            response.raise_for_status()
+                            for line in response.iter_lines():
+                                if line:
+                                    yield f"{line}\n\n"
 
-                with httpx.Client(timeout=django_settings.AI_SERVER_TIMEOUT) as client:
-                    with client.stream(
-                        "POST",
-                        f"{django_settings.AI_SERVER_URL}/api/process/stream",
-                        files={"file": (os.path.basename(full_path), file_data, "video/mp4")},
-                        data={"language": language},
-                    ) as response:
-                        response.raise_for_status()
-                        for line in response.iter_lines():
-                            if line:
-                                yield f"{line}\n\n"
+            except httpx.TimeoutException:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'AI 서버 응답 시간이 초과되었습니다.'})}\n\n"
+
+            except httpx.HTTPStatusError as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'AI 서버 오류: {e.response.status_code}'})}\n\n"
 
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
