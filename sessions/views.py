@@ -235,7 +235,8 @@ class SessionStreamView(APIView):
     """
     POST /api/sessions/stream/
     AI 서버에서 챕터별 스트리밍 데이터를 받아서 프론트에 SSE로 전달
-    complete 이벤트 수신 시 ai_status → done 으로 업데이트
+    chapter_ready: Subtitle/BlankItem/FallEvent/Quiz DB 저장 후 quiz_id 추가
+    complete: DB 저장 완료 후 ai_status → done
     """
     permission_classes = [IsAuthenticated]
 
@@ -253,14 +254,12 @@ class SessionStreamView(APIView):
                 status=400,
             )
 
-        # session_id로 세션 찾기
         session = None
         if session_id:
             session = get_session_or_404(session_id, request.user)
 
         def event_stream():
             try:
-                # 처리 시작 → processing으로 변경
                 if session:
                     session.ai_status = VideoSession.AI_PROCESSING
                     session.save(update_fields=["ai_status"])
@@ -273,16 +272,115 @@ class SessionStreamView(APIView):
                         headers={"Content-Type": "application/json"},
                     ) as response:
                         response.raise_for_status()
+
                         for line in response.iter_lines():
-                            if line:
-                                # complete 이벤트 감지 → done으로 업데이트
-                                if session and (
-                                    '"type": "complete"' in line or
-                                    '"type":"complete"' in line
-                                ):
-                                    session.ai_status = VideoSession.AI_DONE
-                                    session.save(update_fields=["ai_status"])
+                            if not line:
+                                continue
+
+                            if line.startswith("data: "):
+                                raw = line[len("data: "):]
+                            else:
+                                raw = line
+
+                            try:
+                                chunk = json.loads(raw)
+                            except json.JSONDecodeError:
                                 yield f"{line}\n\n"
+                                continue
+
+                            # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
+                            if chunk.get("type") == "chapter_ready" and session:
+                                from sessions.models import Subtitle, BlankItem, FallEvent
+                                from quiz.models import Quiz
+
+                                segments = chunk.get("segments", [])
+                                fall_events_data = chunk.get("fall_events", [])
+                                quizzes = chunk.get("quizzes", [])
+
+                                # 중복 방지: 기존 데이터 삭제 후 재생성
+                                segment_ids = [s.get("segment_id") for s in segments]
+                                Subtitle.objects.filter(
+                                    session=session,
+                                    segment_id__in=segment_ids
+                                ).delete()
+
+                                # Subtitle + BlankItem 저장
+                                subtitle_map = {}
+                                for s in segments:
+                                    subtitle = Subtitle.objects.create(
+                                        session=session,
+                                        segment_id=s.get("segment_id", 0),
+                                        start_sec=s.get("start", 0.0),
+                                        end_sec=s.get("end", 0.0),
+                                        original_text=s.get("original_text", ""),
+                                        blank_text=s.get("blank_text", ""),
+                                    )
+                                    subtitle_map[s.get("segment_id")] = subtitle
+
+                                    for b in s.get("blanks", []):
+                                        BlankItem.objects.create(
+                                            subtitle=subtitle,
+                                            keyword=b.get("keyword", ""),
+                                            position=b.get("position", 0),
+                                            answer_length=b.get("answer_length", 0),
+                                        )
+
+                                # FallEvent 저장
+                                fall_segment_ids = [fe.get("segment_id") for fe in fall_events_data]
+                                FallEvent.objects.filter(
+                                    session=session,
+                                    subtitle__segment_id__in=fall_segment_ids
+                                ).delete()
+
+                                for fe in fall_events_data:
+                                    seg_id = fe.get("segment_id")
+                                    subtitle = subtitle_map.get(seg_id)
+                                    if subtitle:
+                                        FallEvent.objects.create(
+                                            session=session,
+                                            subtitle=subtitle,
+                                            keyword=fe.get("keyword", ""),
+                                            target_time=fe.get("target_time", 0.0),
+                                            fall_window=fe.get("fall_window", 0.5),
+                                        )
+
+                                # Quiz 저장
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+
+                            # complete → DB 저장 완료 후 done 처리
+                            if chunk.get("type") == "complete" and session:
+                                session.ai_status = VideoSession.AI_DONE
+                                session.save(update_fields=["ai_status"])
+
+                            yield f"data: {json.dumps(chunk)}\n\n"
 
             except httpx.TimeoutException:
                 if session:
@@ -312,13 +410,13 @@ class SessionStreamView(APIView):
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
         return response
-
-
+    
 class VideoFileStreamView(APIView):
     """
     POST /api/sessions/stream/file/
     파일 업로드 → AI 서버로 전달 → SSE 스트리밍 반환
-    complete 이벤트 수신 시 ai_status → done 으로 업데이트
+    chapter_ready: Subtitle/BlankItem/FallEvent/Quiz DB 저장 후 quiz_id 추가
+    complete: DB 저장 완료 후 ai_status → done
     """
     permission_classes = [IsAuthenticated]
 
@@ -358,15 +456,115 @@ class VideoFileStreamView(APIView):
                         data={"language": language},
                     ) as response:
                         response.raise_for_status()
+
                         for line in response.iter_lines():
-                            if line:
-                                if session and (
-                                    '"type": "complete"' in line or
-                                    '"type":"complete"' in line
-                                ):
-                                    session.ai_status = VideoSession.AI_DONE
-                                    session.save(update_fields=["ai_status"])
+                            if not line:
+                                continue
+
+                            if line.startswith("data: "):
+                                raw = line[len("data: "):]
+                            else:
+                                raw = line
+
+                            try:
+                                chunk = json.loads(raw)
+                            except json.JSONDecodeError:
                                 yield f"{line}\n\n"
+                                continue
+
+                            # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
+                            if chunk.get("type") == "chapter_ready" and session:
+                                from sessions.models import Subtitle, BlankItem, FallEvent
+                                from quiz.models import Quiz
+
+                                segments = chunk.get("segments", [])
+                                fall_events_data = chunk.get("fall_events", [])
+                                quizzes = chunk.get("quizzes", [])
+
+                                # 중복 방지: 기존 데이터 삭제 후 재생성
+                                segment_ids = [s.get("segment_id") for s in segments]
+                                Subtitle.objects.filter(
+                                    session=session,
+                                    segment_id__in=segment_ids
+                                ).delete()
+
+                                # Subtitle + BlankItem 저장
+                                subtitle_map = {}
+                                for s in segments:
+                                    subtitle = Subtitle.objects.create(
+                                        session=session,
+                                        segment_id=s.get("segment_id", 0),
+                                        start_sec=s.get("start", 0.0),
+                                        end_sec=s.get("end", 0.0),
+                                        original_text=s.get("original_text", ""),
+                                        blank_text=s.get("blank_text", ""),
+                                    )
+                                    subtitle_map[s.get("segment_id")] = subtitle
+
+                                    for b in s.get("blanks", []):
+                                        BlankItem.objects.create(
+                                            subtitle=subtitle,
+                                            keyword=b.get("keyword", ""),
+                                            position=b.get("position", 0),
+                                            answer_length=b.get("answer_length", 0),
+                                        )
+
+                                # FallEvent 저장
+                                fall_segment_ids = [fe.get("segment_id") for fe in fall_events_data]
+                                FallEvent.objects.filter(
+                                    session=session,
+                                    subtitle__segment_id__in=fall_segment_ids
+                                ).delete()
+
+                                for fe in fall_events_data:
+                                    seg_id = fe.get("segment_id")
+                                    subtitle = subtitle_map.get(seg_id)
+                                    if subtitle:
+                                        FallEvent.objects.create(
+                                            session=session,
+                                            subtitle=subtitle,
+                                            keyword=fe.get("keyword", ""),
+                                            target_time=fe.get("target_time", 0.0),
+                                            fall_window=fe.get("fall_window", 0.5),
+                                        )
+
+                                # Quiz 저장
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+
+                            # complete → DB 저장 완료 후 done 처리
+                            if chunk.get("type") == "complete" and session:
+                                session.ai_status = VideoSession.AI_DONE
+                                session.save(update_fields=["ai_status"])
+
+                            yield f"data: {json.dumps(chunk)}\n\n"
 
             except httpx.TimeoutException:
                 if session:
