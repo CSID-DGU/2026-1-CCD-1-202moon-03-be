@@ -69,7 +69,6 @@ class SessionListCreateView(APIView):
             if not file:
                 return error_response("파일을 업로드해주세요.", status=400)
 
-            # 지금은 media/ 폴더에 저장 (나중에 S3로 교체)
             import os
             from django.conf import settings as django_settings
 
@@ -83,8 +82,16 @@ class SessionListCreateView(APIView):
                 for chunk in file.chunks():
                     f.write(chunk)
 
-            # 프론트에서 접근 가능한 URL로 변환
             file_path = f"{django_settings.MEDIA_URL}videos/{file_name}"
+
+            # ── 로컬 파일 제목 추출 ──────────────────────────────
+            # 확장자 제거해서 제목으로 사용
+            original_name = os.path.splitext(file.name)[0]
+            title = original_name if original_name else "새 학습 영상"
+
+            # 썸네일은 로컬 파일에서 추출 불가 → null 유지
+            # (ffmpeg 설치 시 추출 가능하나 현재 미설치)
+            thumbnail_url = None
 
         # ── 세션 생성 ──────────────────────────────────────────────
         session = VideoSession.objects.create(
@@ -207,7 +214,7 @@ class SessionResultView(APIView):
 class SessionSummaryView(APIView):
     """
     GET /api/sessions/{id}/summary/ — AI 정리본 조회
-    이미 있으면 캐시 반환, 없으면 AI 서버 요청
+    이미 있으면 캐시 반환, 없으면 AI 서버에 요청 후 저장
     """
     permission_classes = [IsAuthenticated]
 
@@ -219,7 +226,7 @@ class SessionSummaryView(APIView):
         if session.ai_status != VideoSession.AI_DONE:
             return error_response("AI 처리가 완료되지 않았습니다.", status=400)
 
-        # 이미 요약 있으면 바로 반환 (캐시)
+        # 이미 요약 있으면 캐시 반환
         if session.ai_summary:
             return success_response("AI 정리본 조회 성공", {
                 "session_id": session.id,
@@ -227,8 +234,37 @@ class SessionSummaryView(APIView):
                 "is_cached": True,
             })
 
-        # TODO: AI 서버에 요약 요청 후 저장 (추후 구현)
-        return error_response("AI 정리본을 아직 생성할 수 없습니다.", status=400)
+        # 없으면 AI 서버에 요청
+        try:
+            with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
+                if session.source_type == VideoSession.SOURCE_YOUTUBE:
+                    response = client.post(
+                        f"{settings.AI_SERVER_URL}/api/summary/",
+                        json={"url": session.source_url, "language": "ko"},
+                    )
+                else:
+                    response = client.post(
+                        f"{settings.AI_SERVER_URL}/api/summary/",
+                        json={"session_id": session.id},
+                    )
+                response.raise_for_status()
+                data = response.json()
+                summary = data.get("summary") or data.get("ai_summary", "")
+
+                # DB에 저장 (캐싱)
+                session.ai_summary = summary
+                session.save(update_fields=["ai_summary"])
+
+                return success_response("AI 정리본 조회 성공", {
+                    "session_id": session.id,
+                    "ai_summary": summary,
+                    "is_cached": False,
+                })
+
+        except Exception as e:
+            return error_response(
+                f"AI 정리본 생성에 실패했습니다: {str(e)}", status=500
+            )
     
     
 class SessionStreamView(APIView):
@@ -375,10 +411,13 @@ class SessionStreamView(APIView):
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
 
-                            # complete → DB 저장 완료 후 done 처리
+                            # complete → ai_summary 저장 + done 처리
                             if chunk.get("type") == "complete" and session:
+                                summary = chunk.get("summary") or chunk.get("ai_summary")
+                                if summary:
+                                    session.ai_summary = summary
                                 session.ai_status = VideoSession.AI_DONE
-                                session.save(update_fields=["ai_status"])
+                                session.save(update_fields=["ai_status", "ai_summary"])
 
                             yield f"data: {json.dumps(chunk)}\n\n"
 
@@ -559,10 +598,13 @@ class VideoFileStreamView(APIView):
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
 
-                            # complete → DB 저장 완료 후 done 처리
+                            # complete → ai_summary 저장 + done 처리
                             if chunk.get("type") == "complete" and session:
+                                summary = chunk.get("summary") or chunk.get("ai_summary")
+                                if summary:
+                                    session.ai_summary = summary
                                 session.ai_status = VideoSession.AI_DONE
-                                session.save(update_fields=["ai_status"])
+                                session.save(update_fields=["ai_status", "ai_summary"])
 
                             yield f"data: {json.dumps(chunk)}\n\n"
 
