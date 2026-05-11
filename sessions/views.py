@@ -515,6 +515,10 @@ class VideoFileStreamView(APIView):
                             except json.JSONDecodeError:
                                 yield f"{line}\n\n"
                                 continue
+                            
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.info(f"[SSE chunk] type={chunk.get('type')} keys={list(chunk.keys())}")
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
