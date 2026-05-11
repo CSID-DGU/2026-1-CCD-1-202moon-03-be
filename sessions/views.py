@@ -215,6 +215,7 @@ class SessionSummaryView(APIView):
     """
     GET /api/sessions/{id}/summary/ — AI 정리본 조회
     이미 있으면 캐시 반환, 없으면 AI 서버에 요청 후 저장
+    파일 세션은 complete 이벤트에서 summary 못 받으면 빈 문자열 반환
     """
     permission_classes = [IsAuthenticated]
 
@@ -234,19 +235,22 @@ class SessionSummaryView(APIView):
                 "is_cached": True,
             })
 
-        # 없으면 AI 서버에 요청
+        # 파일 세션은 source_url 없어서 AI 서버 요청 불가
+        # complete 이벤트에서 summary 안 왔으면 빈 문자열 반환
+        if session.source_type == VideoSession.SOURCE_FILE:
+            return success_response("AI 정리본 조회 성공", {
+                "session_id": session.id,
+                "ai_summary": "",
+                "is_cached": False,
+            })
+
+        # 유튜브 세션 → AI 서버에 요청
         try:
             with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
-                if session.source_type == VideoSession.SOURCE_YOUTUBE:
-                    response = client.post(
-                        f"{settings.AI_SERVER_URL}/api/summary/",
-                        json={"url": session.source_url, "language": "ko"},
-                    )
-                else:
-                    response = client.post(
-                        f"{settings.AI_SERVER_URL}/api/summary/",
-                        json={"session_id": session.id},
-                    )
+                response = client.post(
+                    f"{settings.AI_SERVER_URL}/api/summary/",
+                    json={"url": session.source_url, "language": "ko"},
+                )
                 response.raise_for_status()
                 data = response.json()
                 summary = data.get("summary") or data.get("ai_summary", "")
