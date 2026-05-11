@@ -326,16 +326,11 @@ class SessionStreamView(APIView):
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
-                                import logging
-                                logger = logging.getLogger(__name__)
-                                logger.warning(f"[chapter_ready] keys: {list(chunk.keys())}")
-                                logger.warning(f"[chapter_ready] segments count: {len(chunk.get('segments', []))}")
-                                logger.warning(f"[chapter_ready] subtitles count: {len(chunk.get('subtitles', []))}")
-                                logger.warning(f"[chapter_ready] fall_events count: {len(chunk.get('fall_events', []))}")
                                 from sessions.models import Subtitle, BlankItem, FallEvent
                                 from quiz.models import Quiz
 
-                                segments = chunk.get("segments", [])
+                                # ← segments → subtitles 로 변경!
+                                segments = chunk.get("subtitles", [])
                                 fall_events_data = chunk.get("fall_events", [])
                                 quizzes = chunk.get("quizzes", [])
 
@@ -352,8 +347,8 @@ class SessionStreamView(APIView):
                                     subtitle = Subtitle.objects.create(
                                         session=session,
                                         segment_id=s.get("segment_id", 0),
-                                        start_sec=s.get("start", 0.0),
-                                        end_sec=s.get("end", 0.0),
+                                        start_sec=s.get("start", s.get("start_sec", 0.0)),
+                                        end_sec=s.get("end", s.get("end_sec", 0.0)),
                                         original_text=s.get("original_text", ""),
                                         blank_text=s.get("blank_text", ""),
                                     )
@@ -519,16 +514,11 @@ class VideoFileStreamView(APIView):
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
-                                import logging
-                                logger = logging.getLogger(__name__)
-                                logger.warning(f"[chapter_ready] keys: {list(chunk.keys())}")
-                                logger.warning(f"[chapter_ready] segments count: {len(chunk.get('segments', []))}")
-                                logger.warning(f"[chapter_ready] subtitles count: {len(chunk.get('subtitles', []))}")
-                                logger.warning(f"[chapter_ready] fall_events count: {len(chunk.get('fall_events', []))}")
                                 from sessions.models import Subtitle, BlankItem, FallEvent
                                 from quiz.models import Quiz
 
-                                segments = chunk.get("segments", [])
+                                # ← segments → subtitles 로 변경!
+                                segments = chunk.get("subtitles", [])
                                 fall_events_data = chunk.get("fall_events", [])
                                 quizzes = chunk.get("quizzes", [])
 
@@ -545,8 +535,8 @@ class VideoFileStreamView(APIView):
                                     subtitle = Subtitle.objects.create(
                                         session=session,
                                         segment_id=s.get("segment_id", 0),
-                                        start_sec=s.get("start", 0.0),
-                                        end_sec=s.get("end", 0.0),
+                                        start_sec=s.get("start", s.get("start_sec", 0.0)),
+                                        end_sec=s.get("end", s.get("end_sec", 0.0)),
                                         original_text=s.get("original_text", ""),
                                         blank_text=s.get("blank_text", ""),
                                     )
