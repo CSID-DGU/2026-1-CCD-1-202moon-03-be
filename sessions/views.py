@@ -516,9 +516,11 @@ class VideoFileStreamView(APIView):
                                 yield f"{line}\n\n"
                                 continue
                             
-                            import logging
-                            logger = logging.getLogger(__name__)
-                            logger.info(f"[SSE chunk] type={chunk.get('type')} keys={list(chunk.keys())}")
+                            # ── 디버그 로그 ──────────────────────────
+                            print(f"[SSE chunk] type={chunk.get('type')} keys={list(chunk.keys())}", flush=True)
+                            if chunk.get("type") == "complete":
+                                print(f"[complete] {json.dumps(chunk, ensure_ascii=False)}", flush=True)
+                            # ─────────────────────────────────────────
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
