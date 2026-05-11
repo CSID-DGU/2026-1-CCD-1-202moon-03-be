@@ -326,6 +326,12 @@ class SessionStreamView(APIView):
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(f"[chapter_ready] keys: {list(chunk.keys())}")
+                                logger.warning(f"[chapter_ready] segments count: {len(chunk.get('segments', []))}")
+                                logger.warning(f"[chapter_ready] subtitles count: {len(chunk.get('subtitles', []))}")
+                                logger.warning(f"[chapter_ready] fall_events count: {len(chunk.get('fall_events', []))}")
                                 from sessions.models import Subtitle, BlankItem, FallEvent
                                 from quiz.models import Quiz
 
@@ -513,6 +519,12 @@ class VideoFileStreamView(APIView):
 
                             # chapter_ready → Subtitle/BlankItem/FallEvent/Quiz DB 저장
                             if chunk.get("type") == "chapter_ready" and session:
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(f"[chapter_ready] keys: {list(chunk.keys())}")
+                                logger.warning(f"[chapter_ready] segments count: {len(chunk.get('segments', []))}")
+                                logger.warning(f"[chapter_ready] subtitles count: {len(chunk.get('subtitles', []))}")
+                                logger.warning(f"[chapter_ready] fall_events count: {len(chunk.get('fall_events', []))}")
                                 from sessions.models import Subtitle, BlankItem, FallEvent
                                 from quiz.models import Quiz
 
