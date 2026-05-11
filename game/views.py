@@ -133,6 +133,7 @@ class GameEndView(APIView):
                 "typing_accuracy": serializer.validated_data["typing_accuracy"],
                 "quiz_correct": serializer.validated_data["quiz_correct"],
                 "quiz_total": serializer.validated_data["quiz_total"],
+                "tab_switch_count": serializer.validated_data.get("tab_switch_count", 0),
             },
         )
 
@@ -147,6 +148,7 @@ class GameEndView(APIView):
                 "typing_accuracy": result.typing_accuracy,
                 "quiz_correct": result.quiz_correct,
                 "quiz_total": result.quiz_total,
+                "tab_switch_count": result.tab_switch_count,
                 "completed_at": result.completed_at,
             },
             status=201 if created else 200,
