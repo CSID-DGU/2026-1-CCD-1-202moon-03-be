@@ -766,8 +766,8 @@ class SessionFileResumeView(APIView):
 class SessionVideoView(APIView):
     """
     GET /api/sessions/{id}/video/
-    로컬 파일 세션의 영상을 HTTP로 서빙
-    Range 요청 지원 → 영상 seek 가능
+    - S3 파일: S3 URL로 리다이렉트
+    - 로컬 파일(하위 호환): Range 요청 지원으로 직접 서빙
     """
     permission_classes = [IsAuthenticated]
 
@@ -775,6 +775,7 @@ class SessionVideoView(APIView):
         import os
         import mimetypes
         from django.conf import settings as django_settings
+        from django.http import HttpResponseRedirect
 
         session = get_session_or_404(pk, request.user)
         if not session:
@@ -783,6 +784,12 @@ class SessionVideoView(APIView):
         if not session.file_path:
             return error_response("저장된 파일이 없습니다.", status=404)
 
+        # S3 key면 S3 URL로 리다이렉트 (videos/로 시작하면 S3 key)
+        if session.file_path.startswith("videos/"):
+            s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{session.file_path}"
+            return HttpResponseRedirect(s3_url)
+
+        # 기존 로컬 파일 처리 (하위 호환)
         relative_path = session.file_path.lstrip("/")
         relative_path = relative_path.replace("media/", "", 1)
         full_path = os.path.join(django_settings.MEDIA_ROOT, relative_path)
