@@ -338,7 +338,7 @@ class SessionStreamView(APIView):
 
         def event_stream():
             try:
-                if session:
+                if session and session.ai_status != VideoSession.AI_DONE:
                     session.ai_status = VideoSession.AI_PROCESSING
                     session.save(update_fields=["ai_status"])
 
@@ -526,7 +526,7 @@ class VideoFileStreamView(APIView):
 
         def event_stream():
             try:
-                if session:
+                if session and session.ai_status != VideoSession.AI_DONE:
                     session.ai_status = VideoSession.AI_PROCESSING
                     session.save(update_fields=["ai_status"])
 
@@ -927,7 +927,7 @@ class S3VideoStreamView(APIView):
                     "Bucket": settings.AWS_S3_BUCKET_NAME,
                     "Key": s3_key,
                 },
-                ExpiresIn=7200,  # 2시간 (처리 시간 고려)
+                ExpiresIn=7200,
             )
         except ClientError as e:
             def error_stream():
@@ -936,7 +936,7 @@ class S3VideoStreamView(APIView):
         
         def event_stream():
             try:
-                if session:
+                if session and session.ai_status != VideoSession.AI_DONE:
                     session.ai_status = VideoSession.AI_PROCESSING
                     session.save(update_fields=["ai_status"])
 
