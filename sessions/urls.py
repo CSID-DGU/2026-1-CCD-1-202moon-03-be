@@ -15,6 +15,8 @@ urlpatterns = [
     path("<int:pk>/summary/", views.SessionSummaryView.as_view(), name="session-summary"),
     path("stream/", views.SessionStreamView.as_view(), name="session-stream"),
     path("stream/file/", views.VideoFileStreamView.as_view(), name="session-stream-file"),
+    path("stream/s3/", views.S3VideoStreamView.as_view(), name="session-stream-s3"),
+    path("presigned-url/", views.S3PresignedURLView.as_view(), name="session-presigned-url"),
     path("<int:pk>/stream/resume/", views.SessionFileResumeView.as_view(), name="session-stream-resume"),
     path("<int:pk>/video/", views.SessionVideoView.as_view(), name="session-video"),
 ]

@@ -1,6 +1,8 @@
 import json
 import httpx
 import re
+import boto3
+from botocore.exceptions import ClientError
 from django.http import StreamingHttpResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
@@ -815,4 +817,200 @@ class SessionVideoView(APIView):
         )
         response["Accept-Ranges"] = "bytes"
         response["Content-Length"] = str(file_size)
+        return response
+    
+class S3PresignedURLView(APIView):
+    """
+    POST /api/sessions/presigned-url/
+    프론트에서 S3 직접 업로드를 위한 presigned URL 발급
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        file_name = request.data.get("file_name")
+        file_type = request.data.get("file_type", "video/mp4")
+
+        if not file_name:
+            return error_response("파일명을 입력해주세요.", status=400)
+
+        import uuid
+        s3_key = f"videos/{request.user.id}/{uuid.uuid4().hex}_{file_name}"
+
+        s3_client = boto3.client(
+            "s3",
+            region_name=settings.AWS_S3_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
+
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": settings.AWS_S3_BUCKET_NAME,
+                    "Key": s3_key,
+                    "ContentType": file_type,
+                },
+                ExpiresIn=3600,  # 1시간
+            )
+        except ClientError as e:
+            return error_response(f"Presigned URL 생성 실패: {str(e)}", status=500)
+
+        return success_response("Presigned URL 발급 성공", {
+            "presigned_url": presigned_url,
+            "s3_key": s3_key,
+            "s3_url": f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}",
+        })
+        
+class S3VideoStreamView(APIView):
+    """
+    POST /api/sessions/stream/s3/
+    S3에 업로드된 파일을 AI서버로 전달 → SSE 스트리밍
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        session_id = request.data.get("session_id")
+        s3_key = request.data.get("s3_key")
+        language = request.data.get("language", "ko")
+
+        if not s3_key:
+            def error_stream():
+                yield f"data: {json.dumps({'type': 'error', 'message': 's3_key가 없습니다.'})}\n\n"
+            return StreamingHttpResponse(error_stream(), content_type="text/event-stream", status=400)
+
+        session = None
+        if session_id:
+            session = get_session_or_404(session_id, request.user)
+
+        s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
+
+        def event_stream():
+            try:
+                if session:
+                    session.ai_status = VideoSession.AI_PROCESSING
+                    session.save(update_fields=["ai_status"])
+
+                with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
+                    with client.stream(
+                        "POST",
+                        f"{settings.AI_SERVER_URL}/api/process-url/stream",
+                        json={"url": s3_url, "language": language},
+                        headers={"Content-Type": "application/json"},
+                    ) as response:
+                        response.raise_for_status()
+
+                        for line in response.iter_lines():
+                            if not line:
+                                continue
+                            if line.startswith("data: "):
+                                raw = line[len("data: "):]
+                            else:
+                                raw = line
+                            try:
+                                chunk = json.loads(raw)
+                            except json.JSONDecodeError:
+                                yield f"{line}\n\n"
+                                continue
+
+                            # chapter_ready → DB 저장 (기존 로직 동일)
+                            if chunk.get("type") == "chapter_ready" and session:
+                                from sessions.models import Subtitle, BlankItem, FallEvent
+                                from quiz.models import Quiz
+
+                                segments = chunk.get("subtitles", [])
+                                fall_events_data = chunk.get("fall_events", [])
+                                quizzes = chunk.get("quizzes", [])
+
+                                segment_ids = [s.get("segment_id") for s in segments]
+                                Subtitle.objects.filter(session=session, segment_id__in=segment_ids).delete()
+
+                                subtitle_map = {}
+                                for s in segments:
+                                    subtitle = Subtitle.objects.create(
+                                        session=session,
+                                        segment_id=s.get("segment_id", 0),
+                                        start_sec=s.get("start", s.get("start_sec", 0.0)),
+                                        end_sec=s.get("end", s.get("end_sec", 0.0)),
+                                        original_text=s.get("original_text", ""),
+                                        blank_text=s.get("blank_text", ""),
+                                    )
+                                    subtitle_map[s.get("segment_id")] = subtitle
+                                    for b in s.get("blanks", []):
+                                        BlankItem.objects.create(
+                                            subtitle=subtitle,
+                                            keyword=b.get("keyword", ""),
+                                            position=b.get("position", 0),
+                                            answer_length=b.get("answer_length", 0),
+                                        )
+
+                                fall_segment_ids = [fe.get("segment_id") for fe in fall_events_data]
+                                FallEvent.objects.filter(session=session, subtitle__segment_id__in=fall_segment_ids).delete()
+                                for fe in fall_events_data:
+                                    seg_id = fe.get("segment_id")
+                                    subtitle = subtitle_map.get(seg_id)
+                                    if subtitle:
+                                        FallEvent.objects.create(
+                                            session=session,
+                                            subtitle=subtitle,
+                                            keyword=fe.get("keyword", ""),
+                                            target_time=fe.get("target_time", 0.0),
+                                            fall_window=fe.get("fall_window", 0.5),
+                                        )
+
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+
+                            if chunk.get("type") == "complete" and session:
+                                summary = chunk.get("summary") or chunk.get("ai_summary")
+                                if summary:
+                                    session.ai_summary = summary
+                                session.ai_status = VideoSession.AI_DONE
+                                session.save(update_fields=["ai_status", "ai_summary"])
+
+                            yield f"data: {json.dumps(chunk)}\n\n"
+
+            except httpx.TimeoutException:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = "AI 서버 응답 시간이 초과되었습니다."
+                    session.save(update_fields=["ai_status", "ai_error_message"])
+                yield f"data: {json.dumps({'type': 'error', 'message': 'AI 서버 응답 시간이 초과되었습니다.'})}\n\n"
+
+            except Exception as e:
+                if session:
+                    session.ai_status = VideoSession.AI_FAILED
+                    session.ai_error_message = str(e)
+                    session.save(update_fields=["ai_status", "ai_error_message"])
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
         return response
