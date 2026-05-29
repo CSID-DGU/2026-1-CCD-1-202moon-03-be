@@ -1,4 +1,5 @@
 import environ
+import httpx
 from pathlib import Path
 from datetime import timedelta
 
@@ -112,7 +113,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_TIMEZONE = "Asia/Seoul"
 
 AI_SERVER_URL = env("AI_SERVER_URL", default="http://localhost:8001")
-AI_SERVER_TIMEOUT = env.int("AI_SERVER_TIMEOUT", default=600)
+AI_SERVER_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=3600.0,
+    write=600.0,
+    pool=10.0,
+)
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
