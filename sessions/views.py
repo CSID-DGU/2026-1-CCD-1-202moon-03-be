@@ -103,6 +103,7 @@ class SessionListCreateView(APIView):
                 aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                 config=Config(signature_version="s3v4"),
+                endpoint_url=f"https://s3.{settings.AWS_S3_REGION}.amazonaws.com",  # 추가
             )
             try:
                 presigned_url = s3_client.generate_presigned_url(
@@ -842,6 +843,7 @@ class S3PresignedURLView(APIView):
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
             config=Config(signature_version="s3v4"),
+            endpoint_url=f"https://s3.{settings.AWS_S3_REGION}.amazonaws.com",  # 추가
         )
 
         try:
