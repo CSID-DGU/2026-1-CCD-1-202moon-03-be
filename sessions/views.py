@@ -130,9 +130,6 @@ class SessionListCreateView(APIView):
             file_path=file_path,
             thumbnail_url=thumbnail_url,
             mode=mode,
-            file_path=file_path,
-            thumbnail_url=thumbnail_url,
-            mode=mode,
             ai_status=VideoSession.AI_PENDING,
         )
 
