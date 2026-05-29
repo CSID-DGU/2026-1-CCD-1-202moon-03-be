@@ -130,6 +130,9 @@ class SessionListCreateView(APIView):
             file_path=file_path,
             thumbnail_url=thumbnail_url,
             mode=mode,
+            file_path=file_path,
+            thumbnail_url=thumbnail_url,
+            mode=mode,
             ai_status=VideoSession.AI_PENDING,
         )
 
@@ -138,6 +141,9 @@ class SessionListCreateView(APIView):
             {
                 "session_id": session.id,
                 "title": session.title,
+                "thumbnail_url": session.thumbnail_url,
+                "source_url": session.source_url,
+                "file_path": session.file_path,
                 "thumbnail_url": session.thumbnail_url,
                 "source_url": session.source_url,
                 "file_path": session.file_path,
@@ -244,6 +250,8 @@ class SessionSummaryView(APIView):
     GET /api/sessions/{id}/summary/ — AI 정리본 조회
     이미 있으면 캐시 반환, 없으면 AI 서버에 요청 후 저장
     파일 세션은 complete 이벤트에서 summary 못 받으면 빈 문자열 반환
+    이미 있으면 캐시 반환, 없으면 AI 서버에 요청 후 저장
+    파일 세션은 complete 이벤트에서 summary 못 받으면 빈 문자열 반환
     """
     permission_classes = [IsAuthenticated]
 
@@ -255,6 +263,7 @@ class SessionSummaryView(APIView):
         if session.ai_status != VideoSession.AI_DONE:
             return error_response("AI 처리가 완료되지 않았습니다.", status=400)
 
+        # 이미 요약 있으면 캐시 반환
         # 이미 요약 있으면 캐시 반환
         if session.ai_summary:
             return success_response("AI 정리본 조회 성공", {
