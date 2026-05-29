@@ -3,6 +3,7 @@ import httpx
 import re
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 from django.http import StreamingHttpResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
@@ -101,6 +102,7 @@ class SessionListCreateView(APIView):
                 region_name=settings.AWS_S3_REGION,
                 aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                config=Config(signature_version="s3v4"),
             )
             try:
                 presigned_url = s3_client.generate_presigned_url(
@@ -839,6 +841,7 @@ class S3PresignedURLView(APIView):
             region_name=settings.AWS_S3_REGION,
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            config=Config(signature_version="s3v4"),
         )
 
         try:
