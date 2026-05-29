@@ -14,7 +14,7 @@ class SubtitleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subtitle
         fields = ["segment_id", "start_sec", "end_sec",
-                  "original_text", "blank_text", "blanks"]
+                "original_text", "blank_text", "blanks"]
 
 
 class FallEventSerializer(serializers.ModelSerializer):

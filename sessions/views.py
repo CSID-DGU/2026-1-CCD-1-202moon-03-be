@@ -1,5 +1,6 @@
 import json
 import httpx
+import re
 from django.http import StreamingHttpResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
@@ -23,7 +24,16 @@ def get_session_or_404(pk, user):
         return VideoSession.objects.get(id=pk, user=user)
     except VideoSession.DoesNotExist:
         return None
-
+    
+def extract_youtube_id(url: str) -> str | None:
+    patterns = [
+        r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
 
 class SessionListCreateView(APIView):
     """
@@ -53,14 +63,18 @@ class SessionListCreateView(APIView):
         # ── 유튜브 URL인 경우 → 제목/썸네일 자동 추출 ──────────────
         if source_type == VideoSession.SOURCE_YOUTUBE and source_url:
             try:
-                import yt_dlp
-                ydl_opts = {"quiet": True, "skip_download": True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(source_url, download=False)
-                    title = info.get("title", title)
-                    thumbnail_url = info.get("thumbnail")
+                video_id = extract_youtube_id(source_url)
+                if video_id:
+                    thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+
+                # 제목은 oEmbed (인증 불필요)
+                import httpx
+                oembed_url = f"https://www.youtube.com/oembed?url={source_url}&format=json"
+                with httpx.Client(timeout=5) as client:
+                    r = client.get(oembed_url)
+                    if r.status_code == 200:
+                        title = r.json().get("title", title)
             except Exception:
-                # 실패해도 세션 생성은 진행
                 pass
 
         # ── 파일 업로드인 경우 → file_path 저장 ───────────────────
@@ -70,8 +84,11 @@ class SessionListCreateView(APIView):
                 return error_response("파일을 업로드해주세요.", status=400)
 
             import os
+            import subprocess
+            import uuid
             from django.conf import settings as django_settings
 
+            # 1) 파일 저장
             save_dir = os.path.join(django_settings.MEDIA_ROOT, "videos")
             os.makedirs(save_dir, exist_ok=True)
 
@@ -84,14 +101,25 @@ class SessionListCreateView(APIView):
 
             file_path = f"{django_settings.MEDIA_URL}videos/{file_name}"
 
-            # ── 로컬 파일 제목 추출 ──────────────────────────────
-            # 확장자 제거해서 제목으로 사용
+            # 2) 제목 추출 (확장자 제거)
             original_name = os.path.splitext(file.name)[0]
             title = original_name if original_name else "새 학습 영상"
 
-            # 썸네일은 로컬 파일에서 추출 불가 → null 유지
-            # (ffmpeg 설치 시 추출 가능하나 현재 미설치)
-            thumbnail_url = None
+            # 3) 썸네일 추출 (ffmpeg) — 파일 저장 후에 실행
+            thumb_name = f"{uuid.uuid4().hex}.jpg"
+            thumb_dir = os.path.join(django_settings.MEDIA_ROOT, "thumbnails")
+            os.makedirs(thumb_dir, exist_ok=True)
+            thumb_path = os.path.join(thumb_dir, thumb_name)
+
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-i", file_full_path, "-vframes", "1",
+                    "-f", "image2", thumb_path, "-y"],
+                    capture_output=True, timeout=30, check=True,
+                )
+                thumbnail_url = f"{django_settings.MEDIA_URL}thumbnails/{thumb_name}"
+            except Exception:
+                thumbnail_url = None  # ffmpeg 없거나 실패해도 세션 생성 계속
 
         # ── 세션 생성 ──────────────────────────────────────────────
         session = VideoSession.objects.create(
