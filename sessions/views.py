@@ -113,7 +113,6 @@ class SessionListCreateView(APIView):
                     Params={
                         "Bucket": settings.AWS_S3_BUCKET_NAME,
                         "Key": s3_key,
-                        "ContentType": file_type,
                     },
                     ExpiresIn=3600,
                 )
@@ -856,9 +855,8 @@ class S3PresignedURLView(APIView):
                 Params={
                     "Bucket": settings.AWS_S3_BUCKET_NAME,
                     "Key": s3_key,
-                    "ContentType": file_type,
                 },
-                ExpiresIn=3600,  # 1시간
+                ExpiresIn=3600,
             )
         except ClientError as e:
             return error_response(f"Presigned URL 생성 실패: {str(e)}", status=500)
