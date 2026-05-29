@@ -81,47 +81,42 @@ class SessionListCreateView(APIView):
 
         # ── 파일 업로드인 경우 → file_path 저장 ───────────────────
         if source_type == VideoSession.SOURCE_FILE:
-            file = request.FILES.get("file")
-            if not file:
-                return error_response("파일을 업로드해주세요.", status=400)
+            file_name = request.data.get("file_name")
+            file_type = request.data.get("file_type", "video/mp4")
 
-            import os
-            import subprocess
+            if not file_name:
+                return error_response("file_name을 입력해주세요.", status=400)
+
             import uuid
-            from django.conf import settings as django_settings
+            s3_key = f"videos/{request.user.id}/{uuid.uuid4().hex}_{file_name}"
 
-            # 1) 파일 저장
-            save_dir = os.path.join(django_settings.MEDIA_ROOT, "videos")
-            os.makedirs(save_dir, exist_ok=True)
-
-            file_name = f"{request.user.id}_{file.name}"
-            file_full_path = os.path.join(save_dir, file_name)
-
-            with open(file_full_path, "wb") as f:
-                for chunk in file.chunks():
-                    f.write(chunk)
-
-            file_path = f"{django_settings.MEDIA_URL}videos/{file_name}"
-
-            # 2) 제목 추출 (확장자 제거)
-            original_name = os.path.splitext(file.name)[0]
+            # 제목 추출 (확장자 제거)
+            import os
+            original_name = os.path.splitext(file_name)[0]
             title = original_name if original_name else "새 학습 영상"
 
-            # 3) 썸네일 추출 (ffmpeg) — 파일 저장 후에 실행
-            thumb_name = f"{uuid.uuid4().hex}.jpg"
-            thumb_dir = os.path.join(django_settings.MEDIA_ROOT, "thumbnails")
-            os.makedirs(thumb_dir, exist_ok=True)
-            thumb_path = os.path.join(thumb_dir, thumb_name)
-
+            # presigned URL 발급
+            s3_client = boto3.client(
+                "s3",
+                region_name=settings.AWS_S3_REGION,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            )
             try:
-                subprocess.run(
-                    ["ffmpeg", "-i", file_full_path, "-vframes", "1",
-                    "-f", "image2", thumb_path, "-y"],
-                    capture_output=True, timeout=30, check=True,
+                presigned_url = s3_client.generate_presigned_url(
+                    "put_object",
+                    Params={
+                        "Bucket": settings.AWS_S3_BUCKET_NAME,
+                        "Key": s3_key,
+                        "ContentType": file_type,
+                    },
+                    ExpiresIn=3600,
                 )
-                thumbnail_url = f"{django_settings.MEDIA_URL}thumbnails/{thumb_name}"
-            except Exception:
-                thumbnail_url = None  # ffmpeg 없거나 실패해도 세션 생성 계속
+            except ClientError as e:
+                return error_response(f"Presigned URL 생성 실패: {str(e)}", status=500)
+
+            file_path = s3_key  # s3_key를 file_path에 저장
+            thumbnail_url = None  # 썸네일은 추후 S3에서 ffmpeg로 추출 가능
 
         # ── 세션 생성 ──────────────────────────────────────────────
         session = VideoSession.objects.create(
@@ -135,20 +130,23 @@ class SessionListCreateView(APIView):
             ai_status=VideoSession.AI_PENDING,
         )
 
+        # 파일 세션이면 presigned_url, s3_key 포함
+        response_data = {
+            "session_id": session.id,
+            "title": session.title,
+            "thumbnail_url": session.thumbnail_url,
+            "source_url": session.source_url,
+            "file_path": session.file_path,
+            "ai_status": session.ai_status,
+            "mode": session.mode,
+        }
+        if source_type == VideoSession.SOURCE_FILE:
+            response_data["presigned_url"] = presigned_url
+            response_data["s3_key"] = s3_key
+
         return success_response(
             "세션이 생성되었습니다. AI 처리를 시작합니다.",
-            {
-                "session_id": session.id,
-                "title": session.title,
-                "thumbnail_url": session.thumbnail_url,
-                "source_url": session.source_url,
-                "file_path": session.file_path,
-                "thumbnail_url": session.thumbnail_url,
-                "source_url": session.source_url,
-                "file_path": session.file_path,
-                "ai_status": session.ai_status,
-                "mode": session.mode,
-            },
+            response_data,
             status=201,
         )
 
