@@ -913,8 +913,27 @@ class S3VideoStreamView(APIView):
         if session_id:
             session = get_session_or_404(session_id, request.user)
 
-        s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
-
+        s3_client = boto3.client(
+            "s3",
+            region_name=settings.AWS_S3_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
+        try:
+            s3_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": settings.AWS_S3_BUCKET_NAME,
+                    "Key": s3_key,
+                },
+                ExpiresIn=7200,  # 2시간 (처리 시간 고려)
+            )
+        except ClientError as e:
+            def error_stream():
+                yield f"data: {json.dumps({'type': 'error', 'message': f'S3 URL 생성 실패: {str(e)}'})}\n\n"
+            return StreamingHttpResponse(error_stream(), content_type="text/event-stream", status=500)
+        
         def event_stream():
             try:
                 if session:
