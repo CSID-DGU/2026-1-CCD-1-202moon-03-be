@@ -784,10 +784,28 @@ class SessionVideoView(APIView):
         if not session.file_path:
             return error_response("저장된 파일이 없습니다.", status=404)
 
-        # S3 key면 S3 URL로 리다이렉트 (videos/로 시작하면 S3 key)
+        # S3 key면 GET presigned URL 발급 후 리다이렉트
         if session.file_path.startswith("videos/"):
-            s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{session.file_path}"
-            return HttpResponseRedirect(s3_url)
+            from django.http import HttpResponseRedirect
+            s3_client = boto3.client(
+                "s3",
+                region_name=settings.AWS_S3_REGION,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+            )
+            try:
+                presigned_url = s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": settings.AWS_S3_BUCKET_NAME,
+                        "Key": session.file_path,
+                    },
+                    ExpiresIn=3600,
+                )
+                return HttpResponseRedirect(presigned_url)
+            except ClientError as e:
+                return error_response(f"영상 URL 생성 실패: {str(e)}", status=500)
 
         # 기존 로컬 파일 처리 (하위 호환)
         relative_path = session.file_path.lstrip("/")
