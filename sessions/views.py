@@ -924,7 +924,7 @@ class S3VideoStreamView(APIView):
                 with httpx.Client(timeout=settings.AI_SERVER_TIMEOUT) as client:
                     with client.stream(
                         "POST",
-                        f"{settings.AI_SERVER_URL}/api/process-url/stream",
+                        f"{settings.AI_SERVER_URL}/api/process/stream",
                         json={"url": s3_url, "language": language},
                         headers={"Content-Type": "application/json"},
                     ) as response:
