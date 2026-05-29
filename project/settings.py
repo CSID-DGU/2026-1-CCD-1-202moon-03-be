@@ -138,3 +138,8 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
+AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
+AWS_S3_BUCKET_NAME = env("AWS_S3_BUCKET_NAME", default="")
+AWS_S3_REGION = env("AWS_S3_REGION", default="ap-northeast-2")
