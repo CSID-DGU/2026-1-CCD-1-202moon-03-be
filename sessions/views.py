@@ -7,7 +7,7 @@ from botocore.config import Config
 from django.http import StreamingHttpResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from common.response import success_response, error_response
 from .models import VideoSession, Subtitle, FallEvent
@@ -769,7 +769,7 @@ class SessionVideoView(APIView):
     - S3 파일: S3 URL로 리다이렉트
     - 로컬 파일(하위 호환): Range 요청 지원으로 직접 서빙
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, pk):
         import os

@@ -7,7 +7,8 @@ User = get_user_model()
 # 허용된 아바타 목록
 AVATAR_CHOICES = [
     "character_1", "character_2", "character_3",
-    "character_4", "character_5",
+    "character_4", "character_5", "character_6",
+    "character_7", "character_8",
 ]
 
 # 허용된 키 목록
