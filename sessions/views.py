@@ -1182,3 +1182,49 @@ class S3VideoStreamView(APIView):
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
         return response
+    
+class SessionThumbnailPresignView(APIView):
+    """
+    POST /api/sessions/{id}/thumbnail/presign/
+    썸네일 S3 직접 업로드용 presigned URL 발급
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        session = get_session_or_404(pk, request.user)
+        if not session:
+            return error_response("세션을 찾을 수 없습니다.", status=404)
+
+        import uuid
+        file_type = request.data.get("file_type", "image/jpeg")
+        s3_key = f"thumbnails/{request.user.id}/{uuid.uuid4().hex}.jpg"
+
+        s3_client = boto3.client(
+            "s3",
+            region_name=settings.AWS_S3_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": settings.AWS_S3_BUCKET_NAME,
+                    "Key": s3_key,
+                },
+                ExpiresIn=3600,
+            )
+        except ClientError as e:
+            return error_response(f"Presigned URL 생성 실패: {str(e)}", status=500)
+
+        # thumbnail_url DB 저장
+        thumbnail_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
+        session.thumbnail_url = thumbnail_url
+        session.save(update_fields=["thumbnail_url"])
+
+        return success_response("썸네일 presigned URL 발급 성공", {
+            "presigned_url": presigned_url,
+            "s3_key": s3_key,
+            "thumbnail_url": thumbnail_url,
+        })
