@@ -453,6 +453,47 @@ class SessionStreamView(APIView):
                                 chunk["quizzes"] = new_quizzes
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
+                            
+                            # analysis_ready → 퀴즈 저장 + ai_summary 저장
+                            if chunk.get("type") == "analysis_ready" and session:
+                                from quiz.models import Quiz
+
+                                quizzes = chunk.get("quizzes", [])
+                                summary = chunk.get("ai_summary") or chunk.get("summary")
+
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+
+                                if summary:
+                                    session.ai_summary = summary
+                                    session.save(update_fields=["ai_summary"])
+
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
 
                             # complete → ai_summary 저장 + done 처리
                             if chunk.get("type") == "complete" and session:
@@ -647,6 +688,46 @@ class VideoFileStreamView(APIView):
                                 chunk["quizzes"] = new_quizzes
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
+                            # analysis_ready → 퀴즈 저장 + ai_summary 저장
+                            if chunk.get("type") == "analysis_ready" and session:
+                                from quiz.models import Quiz
+
+                                quizzes = chunk.get("quizzes", [])
+                                summary = chunk.get("ai_summary") or chunk.get("summary")
+
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+
+                                if summary:
+                                    session.ai_summary = summary
+                                    session.save(update_fields=["ai_summary"])
+
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
 
                             # complete → ai_summary 저장 + done 처리
                             if chunk.get("type") == "complete" and session:
@@ -764,11 +845,6 @@ class SessionFileResumeView(APIView):
         return response
     
 class SessionVideoView(APIView):
-    """
-    GET /api/sessions/{id}/video/
-    - S3 파일: S3 URL로 리다이렉트
-    - 로컬 파일(하위 호환): Range 요청 지원으로 직접 서빙
-    """
     permission_classes = [AllowAny]
 
     def get(self, request, pk):
@@ -777,8 +853,11 @@ class SessionVideoView(APIView):
         from django.conf import settings as django_settings
         from django.http import HttpResponseRedirect
 
-        session = get_session_or_404(pk, request.user)
-        if not session:
+        # AllowAny라 AnonymousUser가 올 수 있으므로 직접 조회
+        try:
+            from .models import VideoSession
+            session = VideoSession.objects.get(id=pk)
+        except VideoSession.DoesNotExist:
             return error_response("세션을 찾을 수 없습니다.", status=404)
 
         if not session.file_path:
@@ -786,7 +865,6 @@ class SessionVideoView(APIView):
 
         # S3 key면 GET presigned URL 발급 후 리다이렉트
         if session.file_path.startswith("videos/"):
-            from django.http import HttpResponseRedirect
             s3_client = boto3.client(
                 "s3",
                 region_name=settings.AWS_S3_REGION,
@@ -1032,6 +1110,47 @@ class S3VideoStreamView(APIView):
                                         "answer_index": q.get("answer_index", 0),
                                         "explanation": q.get("explanation", ""),
                                     })
+                                chunk["quizzes"] = new_quizzes
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                continue
+                            
+                            # analysis_ready → 퀴즈 저장 + ai_summary 저장
+                            if chunk.get("type") == "analysis_ready" and session:
+                                from quiz.models import Quiz
+
+                                quizzes = chunk.get("quizzes", [])
+                                summary = chunk.get("ai_summary") or chunk.get("summary")
+
+                                new_quizzes = []
+                                for q in quizzes:
+                                    quiz_obj, _ = Quiz.objects.update_or_create(
+                                        session=session,
+                                        quiz_index=q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        defaults={
+                                            "trigger_time": q.get("trigger_time", 0),
+                                            "segment_start": q.get("segment_range", [0, 0])[0],
+                                            "segment_end": q.get("segment_range", [0, 0])[1],
+                                            "question": q.get("question", ""),
+                                            "options_json": q.get("options", []),
+                                            "answer_index": q.get("answer_index", 0),
+                                            "explanation": q.get("explanation", ""),
+                                        },
+                                    )
+                                    new_quizzes.append({
+                                        "quiz_id": quiz_obj.id,
+                                        "ai_quiz_index": q.get("ai_quiz_index", q.get("quiz_id", 0)),
+                                        "trigger_time": q.get("trigger_time", 0),
+                                        "segment_range": q.get("segment_range", [0, 0]),
+                                        "question": q.get("question", ""),
+                                        "options": q.get("options", []),
+                                        "answer_index": q.get("answer_index", 0),
+                                        "explanation": q.get("explanation", ""),
+                                    })
+
+                                if summary:
+                                    session.ai_summary = summary
+                                    session.save(update_fields=["ai_summary"])
+
                                 chunk["quizzes"] = new_quizzes
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
