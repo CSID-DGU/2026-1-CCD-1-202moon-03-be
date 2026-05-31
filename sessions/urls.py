@@ -19,4 +19,5 @@ urlpatterns = [
     path("presigned-url/", views.S3PresignedURLView.as_view(), name="session-presigned-url"),
     path("<int:pk>/stream/resume/", views.SessionFileResumeView.as_view(), name="session-stream-resume"),
     path("<int:pk>/video/", views.SessionVideoView.as_view(), name="session-video"),
+    path("<int:pk>/thumbnail/presign/", views.SessionThumbnailPresignView.as_view(), name="session-thumbnail-presign"),
 ]
