@@ -500,8 +500,12 @@ class SessionStreamView(APIView):
                                 summary = chunk.get("summary") or chunk.get("ai_summary")
                                 if summary:
                                     session.ai_summary = summary
+                                # duration 저장 추가
+                                duration = chunk.get("duration") or chunk.get("duration_sec")
+                                if duration:
+                                    session.duration_sec = duration
                                 session.ai_status = VideoSession.AI_DONE
-                                session.save(update_fields=["ai_status", "ai_summary"])
+                                session.save(update_fields=["ai_status", "ai_summary", "duration_sec"])
 
                             yield f"data: {json.dumps(chunk)}\n\n"
 
@@ -729,13 +733,16 @@ class VideoFileStreamView(APIView):
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 continue
 
-                            # complete → ai_summary 저장 + done 처리
+
                             if chunk.get("type") == "complete" and session:
                                 summary = chunk.get("summary") or chunk.get("ai_summary")
                                 if summary:
                                     session.ai_summary = summary
+                                duration = chunk.get("duration") or chunk.get("duration_sec")  # 추가
+                                if duration:                                                      # 추가
+                                    session.duration_sec = duration                              # 추가
                                 session.ai_status = VideoSession.AI_DONE
-                                session.save(update_fields=["ai_status", "ai_summary"])
+                                session.save(update_fields=["ai_status", "ai_summary", "duration_sec"])  # duration_sec 추가
 
                             yield f"data: {json.dumps(chunk)}\n\n"
 
@@ -1159,9 +1166,12 @@ class S3VideoStreamView(APIView):
                                 summary = chunk.get("summary") or chunk.get("ai_summary")
                                 if summary:
                                     session.ai_summary = summary
+                                # duration 저장 추가
+                                duration = chunk.get("duration") or chunk.get("duration_sec")
+                                if duration:
+                                    session.duration_sec = duration
                                 session.ai_status = VideoSession.AI_DONE
-                                session.save(update_fields=["ai_status", "ai_summary"])
-
+                                session.save(update_fields=["ai_status", "ai_summary", "duration_sec"])
                             yield f"data: {json.dumps(chunk)}\n\n"
 
             except httpx.TimeoutException:

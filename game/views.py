@@ -85,20 +85,19 @@ class GameStartView(APIView):
             "quizzes": quizzes_data,
         }
 
-        # 집중호우 모드면 낙하 이벤트 추가
-        if session.mode == VideoSession.MODE_RAIN:
-            fall_events = FallEvent.objects.select_related("subtitle").filter(
-                session=session
-            )
-            data["fall_events"] = [
-                {
-                    "keyword": fe.keyword,
-                    "target_time": fe.target_time,
-                    "fall_window": fe.fall_window,
-                    "segment_id": fe.subtitle.segment_id,
-                }
-                for fe in fall_events
-            ]
+        # 모드 상관없이 항상 fall_events 포함
+        fall_events = FallEvent.objects.select_related("subtitle").filter(
+            session=session
+        )
+        data["fall_events"] = [
+            {
+                "keyword": fe.keyword,
+                "target_time": fe.target_time,
+                "fall_window": fe.fall_window,
+                "segment_id": fe.subtitle.segment_id,
+            }
+            for fe in fall_events
+        ]
 
         return success_response("게임 시작", data)
 
