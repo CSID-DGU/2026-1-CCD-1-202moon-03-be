@@ -507,7 +507,10 @@ class SessionStreamView(APIView):
                                 session.ai_status = VideoSession.AI_DONE
                                 session.save(update_fields=["ai_status", "ai_summary", "duration_sec"])
 
+                        try:
                             yield f"data: {json.dumps(chunk)}\n\n"
+                        except Exception:
+                            pass  # 프론트 연결 끊겨도 DB 저장은 계속
 
             except httpx.TimeoutException:
                 if session:
@@ -1172,7 +1175,11 @@ class S3VideoStreamView(APIView):
                                     session.duration_sec = duration
                                 session.ai_status = VideoSession.AI_DONE
                                 session.save(update_fields=["ai_status", "ai_summary", "duration_sec"])
-                            yield f"data: {json.dumps(chunk)}\n\n"
+                            
+                            try:
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                            except Exception:
+                                pass  # 프론트 연결 끊겨도 DB 저장은 계속
 
             except httpx.TimeoutException:
                 if session:
