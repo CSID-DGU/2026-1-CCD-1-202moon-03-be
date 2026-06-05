@@ -44,4 +44,5 @@ class GameEndSerializer(serializers.Serializer):
     )
     quiz_correct = serializers.IntegerField(default=0)
     quiz_total = serializers.IntegerField(default=0)
-    tab_switch_count = serializers.IntegerField(default=0)  # ← 추가
+    tab_switch_count = serializers.IntegerField(default=0)
+    study_duration_seconds = serializers.IntegerField(default=0)

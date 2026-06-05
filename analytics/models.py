@@ -14,6 +14,7 @@ class LearningResult(models.Model):
     quiz_total = models.IntegerField(default=0)
     completed_at = models.DateTimeField(auto_now_add=True)
     tab_switch_count = models.IntegerField(default=0)
+    study_duration_seconds = models.IntegerField(default=0)
 
     class Meta:
         db_table = "learning_result"
