@@ -133,6 +133,7 @@ class GameEndView(APIView):
                 "quiz_correct": serializer.validated_data["quiz_correct"],
                 "quiz_total": serializer.validated_data["quiz_total"],
                 "tab_switch_count": serializer.validated_data.get("tab_switch_count", 0),
+                "study_duration_seconds": serializer.validated_data.get("study_duration_seconds", 0),
             },
         )
 
